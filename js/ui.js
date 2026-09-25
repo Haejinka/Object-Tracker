@@ -3,7 +3,9 @@
 
   var statusElement, connectionElement, reportElement, copyButton, sourceElement;
   var readButton, applyButton, clearButton;
-  var TRACK_KEY = "objectTracker.normalizedTrack.v1";
+  var autoScaleInput;
+  var trackHasValidatedBounds = false;
+  var TRACK_KEY = "objectTracker.normalizedTrack.v2";
   var GENERATED_KEY = "objectTracker.generatedKeys.v1";
 
   function setStatus(message, kind) {
@@ -45,11 +47,34 @@
     global.ObjectTrackerState.cachedTrack = track;
     try { localStorage.setItem(TRACK_KEY, JSON.stringify(track)); } catch (error) {}
     var source = track.source || {};
-    sourceElement.textContent = (track.sourceClipName || source.sourceClipName || "Tracked clip") +
-      " · " + track.sampleCount + " samples · " + ((track.mask && track.mask.instanceName) || "Mask") +
-      " · Premiere mask tracker";
+    var mask = track.mask || {};
+    var report = track.trackSourceReport || {};
+    var tracker = report.trackerParameter || {};
+    trackHasValidatedBounds = !!(global.ObjectTrackerTrackingPipeline && global.ObjectTrackerTrackingPipeline.hasValidatedBounds(track));
+    var canScale = trackHasValidatedBounds;
+    updateAutoScaleControl();
+    sourceElement.textContent = "Clip: " + (track.sourceClipName || source.sourceClipName || "Tracked clip") +
+      "\nData: " + (source.streamFormat || source.source || "Premiere mask tracker") +
+      "\nMask: " + (mask.instanceName || "unnamed") + " (component " + (mask.componentId || "unknown") + ")" +
+      "\nTracker parameter: " + (tracker.id || "unknown") +
+      "\nSamples read: " + (track.sampleCount || 0) +
+      "\nMask subtype: " + (source.maskSubtypeClassification || report.objectMaskClassification || "unconfirmed") +
+      "\nBounds / scale: " + (canScale ? "validated" : "unavailable") +
+      "\nParser: " + ((report.formatDetection && report.formatDetection.parserUsed) || "unknown");
     sourceElement.setAttribute("data-ready", "true");
     applyButton.disabled = global.ObjectTrackerState.busy || !global.ObjectTrackerState.hostReady;
+  }
+
+  function clearCachedTrack() {
+    global.ObjectTrackerState.cachedTrack = null;
+    trackHasValidatedBounds = false;
+    try { localStorage.removeItem(TRACK_KEY); } catch (error) {}
+    if (autoScaleInput) {
+      updateAutoScaleControl();
+    }
+    sourceElement.textContent = "No track loaded";
+    sourceElement.removeAttribute("data-ready");
+    applyButton.disabled = true;
   }
 
   function restoreState() {
@@ -70,7 +95,8 @@
 
   function readTrack() {
     if (global.ObjectTrackerState.busy) return;
-    setBusy(true, "Reading the selected clip's saved tracker stream…");
+    clearCachedTrack();
+    setBusy(true, "Saving the Premiere project, then reading the selected clip's tracker stream…");
     global.ObjectTrackerProjectReader.extractSelected(function (result) {
       setBusy(false);
       if (result && result.success && result.normalizedTrack) {
@@ -79,7 +105,9 @@
           projectName: result.projectName,
           objectMaskClassification: result.objectMaskClassification,
           trackerParameter: result.trackerParameter,
-          timeMapping: result.timeMapping
+          timeMapping: result.timeMapping,
+          formatDetection: result.formatDetection,
+          sidecarSummary: result.sidecarSummary
         };
         saveCachedTrack(result.normalizedTrack);
       }
@@ -93,15 +121,28 @@
     return selected ? selected.value : "follow";
   }
 
+  function updateAutoScaleControl() {
+    if (!autoScaleInput) return;
+    var stabilize = selectedMode() === "stabilize";
+    if (stabilize) autoScaleInput.checked = false;
+    autoScaleInput.disabled = stabilize || !trackHasValidatedBounds;
+    autoScaleInput.title = stabilize
+      ? "Stabilize writes Motion Position only. Auto Scale is for Follow mode."
+      : (trackHasValidatedBounds
+        ? "Change target size as validated mask bounds change"
+        : "Auto Scale needs decoded and validated per-frame mask bounds; this track currently contains point motion only.");
+  }
+
   function applyTrack() {
     if (global.ObjectTrackerState.busy || !global.ObjectTrackerState.cachedTrack) return;
     var options = {
       mode: selectedMode(),
+      autoScale: document.getElementById("autoScale").checked,
       x: document.getElementById("xAxis").checked,
       y: document.getElementById("yAxis").checked
     };
     if (!options.x && !options.y) { setStatus("Choose at least one Position axis.", "warning"); return; }
-    setBusy(true, "Adding or finding Transform and writing Position keys…");
+    setBusy(true, options.mode === "stabilize" ? "Writing inverse motion to Motion Position only…" : "Adding or finding Transform and writing Position keys…");
     global.ObjectTrackerBridge.callWithArguments("applyTrackToSelectedTarget", [JSON.stringify(global.ObjectTrackerState.cachedTrack), JSON.stringify(options)], function (result) {
       setBusy(false);
       reportResult(result);
@@ -109,13 +150,18 @@
         var record = {
           targetNodeId: result.targetNodeId,
           sequenceId: result.sequenceId,
-          transformMatchName: result.transform.matchName,
+          transformMatchName: result.transform && result.transform.matchName || null,
+          positionComponentMatchName: result.positionComponent && result.positionComponent.matchName || (result.transform && result.transform.matchName) || null,
+          positionComponentType: result.positionComponentType || "transform",
           generatedKeys: result.generatedKeys,
+          generatedScaleKeys: result.generatedScaleKeys || [],
+          scaleBaseline: result.scaleBaseline || [],
           baseline: result.baseline,
           initialTimeVarying: result.initialTimeVarying,
           initialKeyCount: result.initialKeyCount,
           targetClip: result.targetClip,
-          mode: result.mode
+          mode: result.mode,
+          autoScale: result.autoScale
         };
         var records = global.ObjectTrackerState.generatedRecords;
         var found = -1;
@@ -124,7 +170,9 @@
         else records.push(record);
         try { localStorage.setItem(GENERATED_KEY, JSON.stringify(records)); } catch (error) {}
         clearButton.disabled = false;
-        setStatus("Wrote and verified " + result.keyCount + " Transform Position keys on “" + result.targetClip + "”.", "success");
+        var positionLabel = result.positionPropertyLabel || (result.positionComponentType === "motion" ? "Motion Position" : "Transform Position");
+        var scaleLabel = result.generatedScaleKeys && result.generatedScaleKeys.length ? " and " + result.generatedScaleKeys.length + " Transform Scale keys" : "";
+        setStatus("Wrote and verified " + result.keyCount + " " + positionLabel + " keys" + scaleLabel + " on “" + result.targetClip + "”.", "success");
       }
     });
   }
@@ -195,10 +243,14 @@
       readButton = document.getElementById("readTrackButton");
       applyButton = document.getElementById("applyTrackButton");
       clearButton = document.getElementById("clearKeysButton");
+      autoScaleInput = document.getElementById("autoScale");
+      var modeInputs = document.querySelectorAll('input[name="trackMode"]');
+      for (var modeIndex = 0; modeIndex < modeInputs.length; modeIndex++) modeInputs[modeIndex].addEventListener("change", updateAutoScaleControl);
       readButton.disabled = true;
       applyButton.disabled = true;
       clearButton.disabled = true;
       restoreState();
+      updateAutoScaleControl();
 
       readButton.addEventListener("click", readTrack);
       applyButton.addEventListener("click", applyTrack);

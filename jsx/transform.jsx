@@ -128,6 +128,21 @@ $._ObjectTracker.findPositionProperty = function (component) {
     return matches;
 };
 
+$._ObjectTracker.findScaleProperties = function (component) {
+    var properties = $._ObjectTracker.read(component, "properties");
+    var count = properties ? $._ObjectTracker.read(properties, "numItems") : 0;
+    var matches = { width: [], height: [], uniform: [] };
+    for (var i = 0; i < count; i++) {
+        var parameter = $._ObjectTracker.read(properties, i);
+        if (!parameter) continue;
+        var name = String($._ObjectTracker.read(parameter, "displayName") || "").toLowerCase().replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
+        if (name === "scale width") matches.width.push(parameter);
+        else if (name === "scale height") matches.height.push(parameter);
+        else if (name === "scale") matches.uniform.push(parameter);
+    }
+    return matches;
+};
+
 $._ObjectTracker.findTransformComponents = function (clip) {
     var components = $._ObjectTracker.read(clip, "components");
     var count = components ? $._ObjectTracker.read(components, "numItems") : 0;
@@ -138,6 +153,22 @@ $._ObjectTracker.findTransformComponents = function (clip) {
         var matchName = String($._ObjectTracker.read(component, "matchName") || "");
         var displayName = String($._ObjectTracker.read(component, "displayName") || "");
         if (matchName === "AE.ADBE Geometry2" || matchName === "AE.ADBE Geometry" || displayName.toLowerCase() === "transform") {
+            matches.push({ component: component, matchName: matchName, displayName: displayName, index: i });
+        }
+    }
+    return matches;
+};
+
+$._ObjectTracker.findMotionComponents = function (clip) {
+    var components = $._ObjectTracker.read(clip, "components");
+    var count = components ? $._ObjectTracker.read(components, "numItems") : 0;
+    var matches = [];
+    for (var i = 0; i < count; i++) {
+        var component = $._ObjectTracker.read(components, i);
+        if (!component) continue;
+        var matchName = String($._ObjectTracker.read(component, "matchName") || "");
+        var displayName = String($._ObjectTracker.read(component, "displayName") || "");
+        if (matchName === "AE.ADBE Motion" || displayName.toLowerCase() === "motion") {
             matches.push({ component: component, matchName: matchName, displayName: displayName, index: i });
         }
     }
@@ -267,6 +298,12 @@ $._ObjectTracker.restoreStaticPosition = function (parameter, beforeVarying, bas
     } catch (restoreError) { return false; }
 };
 
+$._ObjectTracker.restoreStaticScalar = function (parameter, beforeVarying, baseline) {
+    if (beforeVarying !== false) return false;
+    try { parameter.setTimeVarying(false); parameter.setValue(Number(baseline), true); return true; }
+    catch (restoreError) { return false; }
+};
+
 $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) {
     var track, options;
     try { track = JSON.parse(trackJson); } catch (parseTrackError) { return JSON.stringify({ success: false, stage: "transform-write", code: "INVALID_TRACK_JSON", message: "The cached track data could not be read." }); }
@@ -276,6 +313,11 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
     if (!sequence) return JSON.stringify({ success: false, stage: "transform-write", code: "NO_ACTIVE_SEQUENCE", message: "Open the sequence containing the motion target." });
     if (summary.videos.length !== 1) return JSON.stringify({ success: false, stage: "transform-write", code: summary.videos.length ? "SELECT_ONE_VIDEO_TARGET" : "NO_SELECTED_VIDEO_TARGET", message: "Select exactly one video or graphic timeline clip as the motion target. Linked audio may remain selected.", selectedVideoCount: summary.videos.length });
     if (!track || !track.samples || track.samples.length < 2 || !track.source) return JSON.stringify({ success: false, stage: "transform-write", code: "TRACK_NOT_READY", message: "Read a valid tracked mask before applying motion." });
+    var mode = String(options.mode || "follow").toLowerCase();
+    var autoScale = mode !== "stabilize" && options.autoScale === true;
+    options.autoScale = autoScale;
+    var writeScale = autoScale;
+    if (writeScale && (!$._ObjectTracker.MotionSolver || !$._ObjectTracker.MotionSolver.hasValidatedBounds(track))) return JSON.stringify({ success: false, stage: "transform-write", code: "TRACK_BOUNDS_UNAVAILABLE", message: "Auto Scale needs decoded and validated per-frame mask bounds." });
     var activeSequenceId = String($._ObjectTracker.read(sequence, "sequenceID") || "");
     if (track.source.sequenceId && String(track.source.sequenceId) !== activeSequenceId) return JSON.stringify({ success: false, stage: "transform-write", code: "SOURCE_TARGET_SEQUENCE_MISMATCH", message: "The selected target is not in the sequence where this track was read. Read the source track again in the target sequence.", sourceSequenceId: track.source.sequenceId, targetSequenceId: activeSequenceId });
     var activeProjectPath = "";
@@ -285,31 +327,47 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
 
     var selected = summary.videos[0];
     var clip = selected.clip;
-    var transforms = $._ObjectTracker.findTransformComponents(clip);
+    var selectedNodeId = String($._ObjectTracker.read(clip, "nodeId") || "");
+    var sourceNodeId = String(track.source.sourceNodeId || "");
+    if (mode === "follow" && sourceNodeId && selectedNodeId === sourceNodeId) {
+        return JSON.stringify({ success: false, stage: "transform-write", code: "FOLLOW_TARGET_IS_TRACK_SOURCE", message: "Select a different video or graphic clip to receive Follow motion. The clip with the Object Mask is the track source." });
+    }
+    var transforms = [];
+    var motionComponents = [];
+    var positionComponent = null;
     var transformAdded = false;
-    if (transforms.length > 1) return JSON.stringify({ success: false, stage: "transform-write", code: "MULTIPLE_TRANSFORM_COMPONENTS", message: "More than one Transform component exists on the selected clip. Remove the ambiguity before applying track data.", transformCount: transforms.length });
-    if (!transforms.length) {
-        var added = $._ObjectTracker.addTransformWithQE(clip, selected.trackIndex);
-        if (!added.success) return JSON.stringify({ success: false, stage: "transform-write", code: added.code, message: added.message, details: added.details || null });
-        transformAdded = true;
+    if (mode === "stabilize") {
+        motionComponents = $._ObjectTracker.findMotionComponents(clip);
+        if (motionComponents.length !== 1) return JSON.stringify({ success: false, stage: "transform-write", code: motionComponents.length ? "MULTIPLE_MOTION_COMPONENTS" : "MOTION_COMPONENT_NOT_FOUND", message: motionComponents.length ? "More than one built-in Motion component exists on the selected clip; no keys were written." : "Premiere did not expose the clip's built-in Motion component; no keys were written.", motionCount: motionComponents.length });
+        positionComponent = motionComponents[0];
+    } else {
         transforms = $._ObjectTracker.findTransformComponents(clip);
-        if (transforms.length !== 1) return JSON.stringify({ success: false, stage: "transform-write", code: "TRANSFORM_ADD_NOT_VERIFIED", message: "Transform was added, but its public component identity could not be verified.", transformAdded: true });
+        if (transforms.length > 1) return JSON.stringify({ success: false, stage: "transform-write", code: "MULTIPLE_TRANSFORM_COMPONENTS", message: "More than one Transform component exists on the selected clip. Remove the ambiguity before applying track data.", transformCount: transforms.length });
+        if (!transforms.length) {
+            var added = $._ObjectTracker.addTransformWithQE(clip, selected.trackIndex);
+            if (!added.success) return JSON.stringify({ success: false, stage: "transform-write", code: added.code, message: added.message, details: added.details || null });
+            transformAdded = true;
+            transforms = $._ObjectTracker.findTransformComponents(clip);
+            if (transforms.length !== 1) return JSON.stringify({ success: false, stage: "transform-write", code: "TRANSFORM_ADD_NOT_VERIFIED", message: "Transform was added, but its public component identity could not be verified.", transformAdded: true });
+        }
+        positionComponent = transforms[0];
     }
 
-    var positionMatches = $._ObjectTracker.findPositionProperty(transforms[0].component);
-    if (positionMatches.length !== 1) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_PROPERTY_AMBIGUOUS", message: "Could not uniquely identify Transform Position by property name.", positionCount: positionMatches.length, transformAdded: transformAdded });
+    var positionLabel = mode === "stabilize" ? "Motion Position" : "Transform Position";
+    var positionMatches = $._ObjectTracker.findPositionProperty(positionComponent.component);
+    if (positionMatches.length !== 1) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_PROPERTY_AMBIGUOUS", message: "Could not uniquely identify " + positionLabel + " by property name.", positionCount: positionMatches.length, transformAdded: transformAdded });
     var position = positionMatches[0];
     var supportsKeys = $._ObjectTracker.call(position, "areKeyframesSupported", []);
-    if (!supportsKeys.available || supportsKeys.error || supportsKeys.value !== true) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_NOT_KEYFRAMEABLE", message: "Premiere did not confirm that this Transform Position property supports keyframes.", transformAdded: transformAdded });
+    if (!supportsKeys.available || supportsKeys.error || supportsKeys.value !== true) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_NOT_KEYFRAMEABLE", message: "Premiere did not confirm that this " + positionLabel + " property supports keyframes.", transformAdded: transformAdded });
     var beforeKeys = $._ObjectTracker.keyList(position);
-    if (!beforeKeys.available) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_KEYS_UNREADABLE", message: "Could not inspect existing Transform Position keyframes safely; no keys were written.", details: beforeKeys.error, transformAdded: transformAdded });
+    if (!beforeKeys.available) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_KEYS_UNREADABLE", message: "Could not inspect existing " + positionLabel + " keyframes safely; no keys were written.", details: beforeKeys.error, transformAdded: transformAdded });
     var beforeVarying = $._ObjectTracker.getTimeVarying(position);
     if (beforeVarying === null) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_TIMEVARIATION_UNREADABLE", message: "Could not determine whether Transform Position is animated; no keys were written.", transformAdded: transformAdded });
-    if (beforeVarying === true || beforeKeys.keys.length) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_ALREADY_KEYFRAMED", message: "Transform Position already has keyframes. Existing animation was preserved; clear only Object Tracker's recorded keys before retrying.", existingKeyCount: beforeKeys.keys.length, timeVarying: beforeVarying, transformAdded: transformAdded });
+    if (beforeVarying === true || beforeKeys.keys.length) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_ALREADY_KEYFRAMED", message: positionLabel + " already has keyframes. Existing animation was preserved; clear only Object Tracker's recorded keys before retrying.", existingKeyCount: beforeKeys.keys.length, timeVarying: beforeVarying, transformAdded: transformAdded });
 
     var valueResult = $._ObjectTracker.call(position, "getValue", []);
     var baseline = valueResult.available && !valueResult.error ? valueResult.value : null;
-    if (!baseline || typeof baseline.length !== "number" || baseline.length < 2 || !isFinite(Number(baseline[0])) || !isFinite(Number(baseline[1]))) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_BASELINE_UNREADABLE", message: "Could not read Transform Position as a two-number array; no animation was written.", transformAdded: transformAdded });
+    if (!baseline || typeof baseline.length !== "number" || baseline.length < 2 || !isFinite(Number(baseline[0])) || !isFinite(Number(baseline[1]))) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_BASELINE_UNREADABLE", message: "Could not read " + positionLabel + " as a two-number array; no animation was written.", transformAdded: transformAdded });
 
     var settings = null;
     try { settings = sequence.getSettings(); } catch (settingsError) {}
@@ -328,17 +386,8 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
     var targetRate = (targetEnd - targetStart) / (targetOut - targetIn);
     var sourceWidth = Number(track.source.sourceWidth) || sequenceWidth;
     var sourceHeight = Number(track.source.sourceHeight) || sequenceHeight;
-    // AEMask2 samples are already normalized coordinates within the tracked
-    // source image. Map those source-normalized deltas to sequence-normalized
-    // Transform Position values. Do not multiply by the clip's Motion Scale:
-    // a render comparison on the tracked 190% clip showed that applying that
-    // scale here again overcorrects the visible trajectory.
     var deltaXFactor = sourceWidth / sequenceWidth;
     var deltaYFactor = sourceHeight / sequenceHeight;
-    var mode = String(options.mode || "follow").toLowerCase();
-    var sign = mode === "stabilize" ? -1 : 1;
-    var includeX = options.x !== false;
-    var includeY = options.y !== false;
     var overlap = [];
     for (var sampleIndex = 0; sampleIndex < track.samples.length; sampleIndex++) {
         var sample = track.samples[sampleIndex];
@@ -347,17 +396,63 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
     }
     if (overlap.length < 2) return JSON.stringify({ success: false, stage: "transform-write", code: "NO_TRACK_TARGET_OVERLAP", message: "The cached source motion does not overlap this target clip in sequence time. Align the target clip under the source track and retry.", targetStart: targetStart, targetEnd: targetEnd, trackStart: track.samples[0].sequenceTime, trackEnd: track.samples[track.samples.length - 1].sequenceTime, transformAdded: transformAdded });
 
-    var anchorX = Number(overlap[0].x), anchorY = Number(overlap[0].y);
-    var planned = [];
-    for (var p = 0; p < overlap.length; p++) {
-        var item = overlap[p];
-        var localSeconds = targetIn + ((item.sequenceTime - targetStart) / targetRate);
-        var dx = (Number(item.x) - anchorX) * deltaXFactor * sign;
-        var dy = (Number(item.y) - anchorY) * deltaYFactor * sign;
-        var outX = baselineX + (includeX ? (normalizedPosition ? dx : dx * sequenceWidth) : 0);
-        var outY = baselineY + (includeY ? (normalizedPosition ? dy : dy * sequenceHeight) : 0);
-        if (!isFinite(localSeconds) || !isFinite(outX) || !isFinite(outY)) return JSON.stringify({ success: false, stage: "transform-write", code: "INVALID_GENERATED_KEY", message: "A calculated Position key was non-finite; no keys were written.", transformAdded: transformAdded });
-        planned.push({ seconds: localSeconds, value: [outX, outY], sequenceTime: item.sequenceTime });
+    if (!$._ObjectTracker.MotionSolver || typeof $._ObjectTracker.MotionSolver.solve !== "function") return JSON.stringify({ success: false, stage: "transform-write", code: "MOTION_SOLVER_UNAVAILABLE", message: "The tracking motion solver did not load; no keys were written.", transformAdded: transformAdded });
+    var solved = $._ObjectTracker.MotionSolver.solve({
+        track: track,
+        overlap: overlap,
+        options: options,
+        sourceWidth: sourceWidth,
+        sourceHeight: sourceHeight,
+        sequenceWidth: sequenceWidth,
+        sequenceHeight: sequenceHeight,
+        targetStart: targetStart,
+        targetEnd: targetEnd,
+        targetIn: targetIn,
+        targetRate: targetRate,
+        baselineX: baselineX,
+        baselineY: baselineY,
+        normalizedPosition: normalizedPosition
+    });
+    if (!solved.success) return JSON.stringify({ success: false, stage: "transform-write", code: solved.code, message: solved.message, details: solved, transformAdded: transformAdded });
+    var planned = solved.positions;
+
+    // Preflight Scale only when the extractor provides validated per-frame bounds.
+    var scaleChannels = [];
+    var scalePlanned = [];
+    if (writeScale) {
+        var scaleProperties = $._ObjectTracker.findScaleProperties(positionComponent.component);
+        if (scaleProperties.width.length === 1 && scaleProperties.height.length === 1 && !scaleProperties.uniform.length) {
+            scaleChannels = [{ name: "width", parameter: scaleProperties.width[0] }, { name: "height", parameter: scaleProperties.height[0] }];
+        } else if (scaleProperties.uniform.length === 1 && !scaleProperties.width.length && !scaleProperties.height.length) {
+            scaleChannels = [{ name: "uniform", parameter: scaleProperties.uniform[0] }];
+        } else {
+            return JSON.stringify({ success: false, stage: "transform-write", code: "SCALE_PROPERTIES_AMBIGUOUS", message: "Could not uniquely identify the Transform Scale properties needed for tracking.", scalePropertyCounts: { width: scaleProperties.width.length, height: scaleProperties.height.length, uniform: scaleProperties.uniform.length }, transformAdded: transformAdded });
+        }
+        var scaleBaselines = [];
+        for (var sc = 0; sc < scaleChannels.length; sc++) {
+            var scaleParameter = scaleChannels[sc].parameter;
+            var scaleSupported = $._ObjectTracker.call(scaleParameter, "areKeyframesSupported", []);
+            var scaleBeforeKeys = $._ObjectTracker.keyList(scaleParameter);
+            var scaleBeforeVarying = $._ObjectTracker.getTimeVarying(scaleParameter);
+            var scaleValue = $._ObjectTracker.call(scaleParameter, "getValue", []);
+            if (!scaleSupported.available || scaleSupported.error || scaleSupported.value !== true || !scaleBeforeKeys.available || scaleBeforeVarying === null || scaleBeforeVarying === true || scaleBeforeKeys.keys.length) {
+                return JSON.stringify({ success: false, stage: "transform-write", code: "SCALE_ALREADY_KEYFRAMED_OR_UNAVAILABLE", message: "Tracking needs readable, unanimated Transform Scale properties. Existing Scale animation was preserved; clear only Object Tracker's recorded keys or choose another target.", channel: scaleChannels[sc].name, existingKeyCount: scaleBeforeKeys.keys ? scaleBeforeKeys.keys.length : null, transformAdded: transformAdded });
+            }
+            var baseScale = scaleValue.available && !scaleValue.error ? Number(scaleValue.value) : NaN;
+            if (!isFinite(baseScale) || baseScale <= 0) return JSON.stringify({ success: false, stage: "transform-write", code: "SCALE_BASELINE_UNREADABLE", message: "Could not read a positive numeric Transform Scale baseline; no keys were written.", channel: scaleChannels[sc].name, transformAdded: transformAdded });
+            scaleBaselines.push({ value: baseScale, timeVarying: scaleBeforeVarying, keys: scaleBeforeKeys.keys });
+        }
+        var relativeScales = solved.scaleFactors;
+        if (!relativeScales || relativeScales.length !== overlap.length) return JSON.stringify({ success: false, stage: "transform-write", code: "TRACK_SCALE_UNAVAILABLE", message: "The motion solver did not return one validated mask-size ratio per frame; no keys were written.", transformAdded: transformAdded });
+        for (var sc2 = 0; sc2 < scaleChannels.length; sc2++) {
+            scaleChannels[sc2].baseline = scaleBaselines[sc2];
+            var scaleMethods = scaleChannels[sc2].parameter;
+            if (typeof $._ObjectTracker.read(scaleMethods, "setTimeVarying") !== "function" || typeof $._ObjectTracker.read(scaleMethods, "addKey") !== "function" || typeof $._ObjectTracker.read(scaleMethods, "setValueAtKey") !== "function" || typeof $._ObjectTracker.read(scaleMethods, "removeKey") !== "function") return JSON.stringify({ success: false, stage: "transform-write", code: "SCALE_WRITE_API_INCOMPLETE", message: "Premiere's Transform Scale keyframe writer or rollback methods are unavailable; no keys were written.", channel: scaleChannels[sc2].name, transformAdded: transformAdded });
+            for (var scaleSampleIndex = 0; scaleSampleIndex < planned.length; scaleSampleIndex++) {
+                var factor = relativeScales[scaleSampleIndex].factor;
+                scalePlanned.push({ channel: sc2, seconds: planned[scaleSampleIndex].seconds, value: scaleBaselines[sc2].value * factor });
+            }
+        }
     }
 
     var methods = {
@@ -430,11 +525,60 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
         return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_READBACK_FAILED", message: failure, rolledBackKeyCount: readbackRollback.removed, rollbackVerified: readbackRollback.verified, staticValueRestored: readbackRestored, transformAdded: transformAdded });
     }
 
+    var generatedScale = [];
+    if (writeScale) {
+        try {
+            for (var sch = 0; sch < scaleChannels.length; sch++) scaleChannels[sch].parameter.setTimeVarying(true);
+            for (var sk = 0; sk < scalePlanned.length; sk++) {
+                var scaleKey = new Time();
+                scaleKey.seconds = scalePlanned[sk].seconds;
+                var channel = scaleChannels[scalePlanned[sk].channel];
+                channel.parameter.addKey(scaleKey);
+                channel.parameter.setValueAtKey(scaleKey, scalePlanned[sk].value, false);
+            }
+        } catch (scaleWriteError) { failure = String(scaleWriteError); }
+        if (!failure) {
+            for (var sv = 0; sv < scaleChannels.length; sv++) {
+                var scaleVerify = $._ObjectTracker.keyList(scaleChannels[sv].parameter);
+                if (!scaleVerify.available) { failure = "Premiere did not return a readable key list for Transform Scale."; break; }
+                for (var skv = 0; skv < overlap.length; skv++) {
+                    var expected = scalePlanned[sv * overlap.length + skv];
+                    var scaleKeyAtTime = $._ObjectTracker.findExactKey(scaleVerify.keys, expected.seconds, 0.00001);
+                    var scaleReadback = scaleKeyAtTime ? $._ObjectTracker.positionValue(scaleChannels[sv].parameter, scaleKeyAtTime) : null;
+                    if (scaleReadback === null || !isFinite(Number(scaleReadback)) || Math.abs(Number(scaleReadback) - expected.value) > 0.001) {
+                        failure = "Premiere could not read back every generated Transform Scale key.";
+                        break;
+                    }
+                    generatedScale.push({ channel: scaleChannels[sv].name, time: expected.seconds, value: expected.value });
+                }
+                if (failure) break;
+            }
+        }
+        if (failure) {
+            for (var sr = 0; sr < scaleChannels.length; sr++) {
+                var scaleRollback = $._ObjectTracker.removeNewKeysSince(scaleChannels[sr].parameter, scaleChannels[sr].baseline.keys);
+                $._ObjectTracker.restoreStaticScalar(scaleChannels[sr].parameter, scaleChannels[sr].baseline.timeVarying, scaleChannels[sr].baseline.value);
+            }
+            var positionRollback = $._ObjectTracker.removeNewKeysSince(position, beforeKeys.keys);
+            var positionRestored = $._ObjectTracker.restoreStaticPosition(position, beforeVarying, [baselineX, baselineY]);
+            return JSON.stringify({ success: false, stage: "transform-write", code: "SCALE_WRITE_FAILED", message: "Premiere rejected or could not verify the generated Scale keys. New Position and Scale keys were rolled back where possible.", details: failure, positionRollbackVerified: positionRollback.verified, positionStaticValueRestored: positionRestored, transformAdded: transformAdded });
+        }
+    }
+
+    var scaleBaselineReport = [];
+    if (writeScale) {
+        for (var scaleReportIndex = 0; scaleReportIndex < scaleChannels.length; scaleReportIndex++) {
+            var reportedChannel = scaleChannels[scaleReportIndex];
+            scaleBaselineReport.push({ name: reportedChannel.name, value: reportedChannel.baseline.value, initialTimeVarying: reportedChannel.baseline.timeVarying, initialKeyCount: reportedChannel.baseline.keys.length });
+        }
+    }
     return JSON.stringify({
         success: true,
         stage: "transform-write",
         code: "TRACK_APPLIED",
-        message: "Verified editable Transform Position keyframes on the selected target.",
+        message: mode === "stabilize"
+            ? "Verified editable Motion Position keyframes for stabilization. No Transform or Scale keys were added."
+            : (writeScale ? "Verified editable Transform Position and Scale keyframes on the selected target." : "Verified editable Transform Position keyframes on the selected target."),
         sourceClip: track.source.sourceClipName || null,
         targetClip: String($._ObjectTracker.read(clip, "name") || ""),
         targetNodeId: String($._ObjectTracker.read(clip, "nodeId") || ""),
@@ -442,8 +586,13 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
         targetClipIndex: selected.clipIndex,
         sequenceId: String($._ObjectTracker.read(sequence, "sequenceID") || ""),
         mode: mode,
-        axis: { x: includeX, y: includeY },
-        transform: { matchName: transforms[0].matchName, displayName: transforms[0].displayName, added: transformAdded },
+        autoScale: autoScale,
+        scaleFactors: { x: deltaXFactor, y: deltaYFactor },
+        axis: { x: options.x !== false, y: options.y !== false },
+        positionComponentType: mode === "stabilize" ? "motion" : "transform",
+        positionComponent: { matchName: positionComponent.matchName, displayName: positionComponent.displayName, added: transformAdded },
+        transform: mode === "stabilize" ? null : { matchName: positionComponent.matchName, displayName: positionComponent.displayName, added: transformAdded },
+        positionPropertyLabel: positionLabel,
         coordinateType: normalizedPosition ? "normalized" : "pixels",
         baseline: [baselineX, baselineY],
         initialTimeVarying: beforeVarying,
@@ -452,11 +601,32 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
         firstKey: generated[0],
         lastKey: generated[generated.length - 1],
         generatedKeys: generated,
+        generatedScaleKeys: generatedScale,
+        scaleBaseline: scaleBaselineReport,
         sampleCount: track.samples.length,
         trackSource: track.source.source,
         sourceDimensionsAssumedFromSequence: track.source.sourceDimensionsAssumedFromSequence === true,
-        note: "Keys are ordinary Transform Position effect data. Motion.Position was not modified."
+        motionDiagnostics: solved.diagnostics,
+        note: mode === "stabilize"
+            ? "Stabilization writes only inverse-motion keys to the clip's built-in Motion Position. The Object Mask and all Scale properties are left untouched."
+            : (autoScale ? "Transform Position follows the tracked point independently from Transform Scale, which follows validated mask bounds. The target's existing Transform Scale remains the reference size." : "Transform Position follows the tracked point. The target's existing Transform Position remains the reference placement.")
     });
+};
+
+// Convert unexpected ExtendScript exceptions into useful structured diagnostics
+// instead of CEP's opaque "EvalScript error." response.
+var _applyTrackToSelectedTarget = $._ObjectTracker.applyTrackToSelectedTarget;
+$._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) {
+    try {
+        var result = _applyTrackToSelectedTarget(trackJson, optionsJson);
+        if (typeof result === "string" && result.length) return result;
+        return JSON.stringify({ success: false, stage: "transform-write", code: "HOST_EMPTY_RESULT", message: "Premiere completed the Apply call without returning a result." });
+    } catch (error) {
+        var details = String(error);
+        try { if (error.line !== undefined) details += " (line " + error.line + ")"; } catch (lineError) {}
+        try { if (error.fileName) details += " in " + String(error.fileName); } catch (fileError) {}
+        return JSON.stringify({ success: false, stage: "transform-write", code: "HOST_EXCEPTION", message: "Premiere hit an unexpected scripting error while applying the track. Check the selected clip's Position keys before retrying.", details: details, possiblePartialWrite: true });
+    }
 };
 
 $._ObjectTracker.clearGeneratedPositionKeys = function (recordJson) {
@@ -469,10 +639,20 @@ $._ObjectTracker.clearGeneratedPositionKeys = function (recordJson) {
     var nodeId = String($._ObjectTracker.read(clip, "nodeId") || "");
     var sequenceId = String($._ObjectTracker.read(summary.sequence, "sequenceID") || "");
     if (nodeId !== String(record.targetNodeId || "") || sequenceId !== String(record.sequenceId || "")) return JSON.stringify({ success: false, stage: "clear-generated-keys", code: "WRONG_TARGET_SELECTED", message: "The selected clip does not match the clip recorded when Object Tracker wrote the keys.", selectedNodeId: nodeId, recordedNodeId: record.targetNodeId, selectedSequenceId: sequenceId, recordedSequenceId: record.sequenceId });
-    var transforms = $._ObjectTracker.findTransformComponents(clip);
     var component = null;
-    for (var i = 0; i < transforms.length; i++) if (transforms[i].matchName === record.transformMatchName) component = transforms[i].component;
-    if (!component) return JSON.stringify({ success: false, stage: "clear-generated-keys", code: "RECORDED_TRANSFORM_NOT_FOUND", message: "The Transform component recorded for this key set was not found." });
+    if (record.positionComponentType === "motion" || record.positionComponentMatchName === "AE.ADBE Motion") {
+        var motionComponents = $._ObjectTracker.findMotionComponents(clip);
+        var recordedMotionName = String(record.positionComponentMatchName || "");
+        for (var i = 0; i < motionComponents.length; i++) {
+            if (recordedMotionName ? motionComponents[i].matchName === recordedMotionName : motionComponents.length === 1) component = motionComponents[i].component;
+        }
+        if (!component) return JSON.stringify({ success: false, stage: "clear-generated-keys", code: "RECORDED_MOTION_NOT_FOUND", message: "The built-in Motion component recorded for these Position keys was not found." });
+    } else {
+        var transforms = $._ObjectTracker.findTransformComponents(clip);
+        var recordedMatchName = record.positionComponentMatchName || record.transformMatchName;
+        for (var t = 0; t < transforms.length; t++) if (transforms[t].matchName === recordedMatchName) component = transforms[t].component;
+        if (!component) return JSON.stringify({ success: false, stage: "clear-generated-keys", code: "RECORDED_TRANSFORM_NOT_FOUND", message: "The Transform component recorded for this key set was not found." });
+    }
     var positions = $._ObjectTracker.findPositionProperty(component);
     if (positions.length !== 1) return JSON.stringify({ success: false, stage: "clear-generated-keys", code: "POSITION_PROPERTY_AMBIGUOUS", message: "Could not uniquely identify the recorded Position property." });
     var parameter = positions[0];
@@ -492,5 +672,33 @@ $._ObjectTracker.clearGeneratedPositionKeys = function (recordJson) {
     if (record.initialTimeVarying === false && remaining.available && remaining.keys.length === 0) {
         resetToStatic = $._ObjectTracker.restoreStaticPosition(parameter, false, record.baseline || [0.5, 0.5]);
     }
-    return JSON.stringify({ success: true, stage: "clear-generated-keys", code: "GENERATED_KEYS_CLEARED", message: "Removed Object Tracker keys whose timestamps and values still match the saved record; user-edited keys were kept.", removedKeyCount: removed, missingKeyCount: missing, changedKeyCount: changed, remainingKeyCount: remaining.available ? remaining.keys.length : null, resetToStatic: resetToStatic, transformKept: true });
+    var scaleRemoved = 0, scaleChanged = 0, scaleMissing = 0;
+    var scaleRecords = record.generatedScaleKeys || [];
+    if (scaleRecords.length) {
+        var scales = $._ObjectTracker.findScaleProperties(component);
+        for (var scaleRecordIndex = scaleRecords.length - 1; scaleRecordIndex >= 0; scaleRecordIndex--) {
+            var scaleRecord = scaleRecords[scaleRecordIndex];
+            var matches = scales[scaleRecord.channel] || [];
+            if (matches.length !== 1) { scaleChanged++; continue; }
+            var scaleParameter = matches[0];
+            var scaleKeysNow = $._ObjectTracker.keyList(scaleParameter);
+            if (!scaleKeysNow.available) { scaleChanged++; continue; }
+            var recordedScaleKey = $._ObjectTracker.findExactKey(scaleKeysNow.keys, Number(scaleRecord.time), 0.00001);
+            if (!recordedScaleKey) { scaleMissing++; continue; }
+            var recordedScaleValue = $._ObjectTracker.positionValue(scaleParameter, recordedScaleKey);
+            if (recordedScaleValue === null || Math.abs(Number(recordedScaleValue) - Number(scaleRecord.value)) > 0.001) { scaleChanged++; continue; }
+            try { scaleParameter.removeKey(recordedScaleKey); scaleRemoved++; } catch (scaleRemoveError) { scaleChanged++; }
+        }
+        var baselines = record.scaleBaseline || [];
+        for (var baselineIndex = 0; baselineIndex < baselines.length; baselineIndex++) {
+            var baselineRecord = baselines[baselineIndex];
+            var baselineMatches = scales[baselineRecord.name] || [];
+            if (baselineMatches.length !== 1) continue;
+            var remainingScale = $._ObjectTracker.keyList(baselineMatches[0]);
+            if (baselineRecord.initialTimeVarying === false && remainingScale.available && remainingScale.keys.length === 0) {
+                $._ObjectTracker.restoreStaticScalar(baselineMatches[0], false, baselineRecord.value);
+            }
+        }
+    }
+    return JSON.stringify({ success: true, stage: "clear-generated-keys", code: "GENERATED_KEYS_CLEARED", message: "Removed Object Tracker keys whose timestamps and values still match the saved record; user-edited keys were kept.", removedKeyCount: removed, missingKeyCount: missing, changedKeyCount: changed, scaleRemovedKeyCount: scaleRemoved, scaleMissingKeyCount: scaleMissing, scaleChangedKeyCount: scaleChanged, remainingKeyCount: remaining.available ? remaining.keys.length : null, resetToStatic: resetToStatic, positionComponentType: record.positionComponentType || "transform", transformKept: true });
 };

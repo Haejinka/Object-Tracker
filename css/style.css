@@ -99,17 +99,21 @@ main { display: grid; gap: 10px; }
 .button-primary:hover:not(:disabled) { border-color: #c3a3ff; background: var(--accent-pressed); }
 .button-small { min-height: 24px; padding: 0 8px; font-size: 10px; }
 
-.track-source {
+.track-source-card {
   margin-top: 10px;
   border: 1px solid var(--line);
   border-radius: 5px;
   background: #222;
   padding: 8px;
+}
+.track-source-heading { display: block; margin-bottom: 4px; color: var(--text); font-size: 11px; }
+.track-source {
   color: var(--muted);
   line-height: 1.4;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
-.track-source[data-ready="true"] { color: var(--good); border-color: #42624b; }
+.track-source[data-ready="true"] { color: var(--good); }
 .mode-options {
   display: flex;
   flex-wrap: wrap;

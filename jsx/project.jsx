@@ -1,3 +1,23 @@
+$._ObjectTracker.saveProject = function () {
+    var project = app.project;
+    if (!project) return JSON.stringify({ success: false, stage: "save-project", code: "NO_PROJECT", message: "No Premiere project is open." });
+    var projectPath = "";
+    try { projectPath = String(project.path || ""); } catch (pathError) {}
+    if (!projectPath) return JSON.stringify({ success: false, stage: "save-project", code: "PROJECT_NOT_SAVED", message: "Save the Premiere project once before reading its tracked mask." });
+    try {
+        var result = project.save();
+        // Premiere versions may expose the documented 0 success code or no
+        // return value through CEP. A thrown error or explicit failure is the
+        // reliable failure signal; project.dirty is not a documented API.
+        if (result === false || (typeof result === "number" && result !== 0)) {
+            return JSON.stringify({ success: false, stage: "save-project", code: "PROJECT_SAVE_FAILED", message: "Premiere reported a project save failure.", saveResult: result });
+        }
+        return JSON.stringify({ success: true, stage: "save-project", projectPath: projectPath, saveResult: result === undefined ? null : result, message: "Premiere save command completed; reading the saved project file." });
+    } catch (error) {
+        return JSON.stringify({ success: false, stage: "save-project", code: "PROJECT_SAVE_FAILED", message: "Premiere could not save the project. Resolve any save prompt or error, then try again.", detail: String(error) });
+    }
+};
+
 $._ObjectTracker.savedProjectContext = function () {
     var project = app.project;
     var sequence = $._ObjectTracker.getActiveSequence();
@@ -85,6 +105,8 @@ $._ObjectTracker.savedProjectContext = function () {
     var payload = {
         success: true,
         stage: "saved-project-context",
+        premiereVersion: String(app.version || ""),
+        premiereBuild: String(app.build || ""),
         projectPath: projectPath,
         projectDirty: dirty,
         sequence: sequence ? $._ObjectTracker.read(sequence, "name") : null,

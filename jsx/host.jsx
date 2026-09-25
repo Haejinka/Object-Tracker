@@ -26,7 +26,7 @@
     // current project folder, so it is not a reliable base for module paths.
     $._ObjectTracker.loadModules = function (extensionRoot) {
         var jsxFolder = new Folder(String(extensionRoot) + "/jsx");
-        var files = ["utilities.jsx", "inspector.jsx", "tracker.jsx", "transform.jsx", "project.jsx"];
+        var files = ["utilities.jsx", "inspector.jsx", "tracker.jsx", "motion-solver.jsx", "transform.jsx", "project.jsx"];
         var loadErrors = $._ObjectTracker.loadErrors;
         loadErrors.length = 0;
 
