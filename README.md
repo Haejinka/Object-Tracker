@@ -1,55 +1,50 @@
 # Object Tracker
 
-Object Tracker is an Adobe Premiere Pro 26+ CEP panel. It reads tracking data from the saved Premiere project and writes editable keyframes to a selected target clip.
+Object Tracker is an Adobe Premiere Pro CEP panel for reading a mask track from a saved Premiere project and writing editable motion keyframes to another timeline clip. The current parser and tracking data are validated for Premiere Pro 26.x.
 
-## Use it
+## Use the panel
 
-1. Select one timeline video clip that has a tracked classic mask or Object Mask.
-2. Save the Premiere project once. Choose Read Track Source. The project and its adjacent Masks folder must be available.
-3. Select a different video or graphic clip in the same sequence. Choose Follow or Stabilize and click Apply to Selected Target.
-4. Use Clear Generated Keys on Selected Target to remove only Object Tracker keys that still match their recorded time and value.
+1. Open a sequence and select one video timeline clip that contains a tracked Object Mask or supported classic mask. Linked audio may stay selected, but select only one video clip.
+2. Click **Detect**. The panel saves the project, then reads the selected clip's tracking data from the project file and its adjacent `Masks` folder. The project must already have a file path; save a new project first. Wait for the detected source name and frame count.
+3. Select the video or graphic clip that should receive the motion, then click **Use Selection**. The selected target must be in the same sequence as the source.
+4. Choose **Follow** or **Stabilize** and choose the X and Y axes. In Follow mode, **Scale** becomes available only when the detected Object Mask has validated per-frame size data.
+5. Click **Apply Tracking**. Keep the chosen target selected until the operation completes. Save the Premiere project to keep the new keyframes.
 
-The source is the clip with the mask. The target is the clip that receives motion.
+The panel rechecks that the same target is selected before writing. If Premiere cannot safely identify a unique Position property, the target already has Position animation, or the track and target do not overlap in time, the panel stops and reports the issue. For a new target, place and size it where it should appear on the first tracked frame before applying Follow.
 
-## Modes
+## Tracking modes
 
-| Mode | What it writes | Bounds and scale |
-|---|---|---|
-| Follow | Transform Position keys move the target by the tracked center's change from the first overlapping frame. The target's existing Transform Position is the placement baseline. | Optional Auto Scale changes Transform Scale from validated Object Mask width and height. It keeps the target's starting scale as the reference. |
-| Stabilize | Inverse movement keys on the target clip's built-in Motion Position. | It does not add Transform, change Scale, or put the Object Mask on the target. Auto Scale is disabled. |
+| Mode | Result |
+|---|---|
+| Follow | Writes Transform Position keys using the tracked center's movement from the first overlapping frame. The target's existing Transform Position is the placement baseline. |
+| Follow with Scale | Also writes Transform Scale keys from validated Object Mask width and height changes. The target's starting Scale is the reference. The scale factor is the square root of the product of the width ratio and height ratio. |
+| Stabilize | Writes inverse movement to the target's built-in Motion Position. It does not add Transform, change Scale, or copy the mask to the target. Scale is disabled. |
 
-The target clip's Position must not already be animated. Follow with Auto Scale also requires readable, unanimated Transform Scale. Object Tracker stops when those values cannot be safely read or written. It verifies generated keys and attempts rollback after write failures. Clearing preserves keys the user has edited.
+X and Y independently control the Position axes. At least one axis must be selected. Scale follows the Object Mask rectangle size; it does not fit visible graphic pixels, transparent image edges, crop, or anchor points to the mask.
 
-Auto Scale multiplies the starting scale by the square root of the product of current-to-reference mask width and height ratios. The graphic grows with the tracked object and shrinks as it gets smaller. This scales the target as a whole; it does not fit the visible pixels or transparent edges of a PNG to the mask. The removed Fit target frame option is not part of the current panel.
+## Supported source data
 
-## Supported tracking data
+- **Object Mask, Premiere 26.x:** The reader follows the selected tracker's UUID sidecar references and accepts validated PRMF v3 per-frame rectangles and times. It checks record layout, payload ranges, source dimensions, clip timing, overlap, and frame coverage before reporting geometry or enabling Scale.
+- **Classic AEMask2, Premiere 26.x:** The reader extracts the observed 104-byte tracker point samples for Position. These samples do not provide validated bounds, so Scale is unavailable.
+- **Premiere 27.x:** Private data parsing is disabled until those formats have been independently validated. Rotation is not decoded.
 
-- Premiere 26.x Object Mask: resolves the selected mask tracker's UUID sidecar references and decodes validated per-frame rectangles and times from PRMF v3 files. The reader checks record layout, payload ranges, source dimensions, clip timing, and continuous frame coverage before reporting geometry or enabling Auto Scale.
-- Classic AEMask2: reads the observed 104-byte Tracker samples on Premiere 26.x and supplies point motion only. It has no validated per-frame bounds, so Auto Scale is unavailable.
-- Premiere 27.x parsing is disabled until the private data layouts are independently validated. Rotation is not decoded.
+The mask source must be accessible through the saved project and its adjacent `Masks` folder. Detect reads the selected clip's own mask component and linked data. Object Mask recognition is based on validated sidecars rather than a private component hash. One-record sidecars are treated as references, not motion samples.
 
-Object Mask classification comes from the selected tracker's linked PRMF sidecars, not a private component hash. Single-record sidecars are kept as reference data and are not mistaken for a motion timeline.
+## Current limits
 
-## Known limits
+- Follow moves and scales the target clip as a whole. It does not inspect a graphic's visible artwork, PNG transparency, internal crop, or anchor point. Place the target correctly on its first tracked frame.
+- Position conversion uses source and sequence frame dimensions. Source Motion Scale, rotation, pixel aspect ratio, and nested-sequence transforms are not applied and can affect alignment.
+- Object Mask rotation and perspective are unsupported. Scale follows rectangle size only.
+- A classic-mask sample is treated as a tracker point; the plugin does not assert that it is the mask center or size.
+- The panel currently has no user-facing **Clear Generated Keys** control. Premiere keyframe writing is available through the panel, while the host-side clear routine is not connected to the UI. To remove keys, edit them in Premiere's Effect Controls.
+- Object Mask Stabilize is implemented through Motion Position, but its live write and rendered result have not been recorded as validated. Manual Effect Controls inspection and project reopen persistence checks are also outstanding.
 
-- The decoder reads rectangle metadata in the PRMF trailer. The high-entropy mask image payload remains undecoded; it is not needed for center and size.
-- Follow keeps the target's chosen placement. It does not inspect a graphic's visible artwork, PNG transparency, internal crop, or anchor to align those pixels to the mask. Place the target where it should sit on the first tracked frame.
-- Position conversion uses source and sequence frame dimensions. It does not apply source Motion Scale, rotation, pixel aspect ratio, or nested-sequence transforms. These can affect alignment in some projects.
-- Object Mask rotation and perspective are unsupported. Auto Scale follows rectangle size only.
-- A classic-mask point is used as a tracking point; it is not asserted to be the mask's center or size.
+## Install for development
 
-## Validation status
-
-Five controlled Premiere 26.3.2 projects cover static, horizontal-only, vertical-only, scale-up, and scale-down behavior. Each decodes 20 frames. The controls validate independent center axes and increasing/decreasing bounds; the scale samples also contain some horizontal center drift. A separate 96-frame project and a 393-frame trimmed clip pass the PRMF reader. Premiere key readback confirmed 20 Position and 40 Scale keys on a scale-down graphic; scale-up behavior was also confirmed.
-
-Object Mask Stabilize uses Motion Position in the current implementation, but its live write-and-render behavior has not been recorded as validated. Other pending checks include manual Effect Controls inspection and project close/reopen persistence.
-
-## Development
-
-The project uses CEP, HTML, JavaScript, and ExtendScript. Install the folder under:
+This CEP extension targets Adobe Premiere Pro 26+ and CEP 12. Copy the project folder to:
 
     %APPDATA%\Adobe\CEP\extensions\com.objecttracker.premiere
 
-Then reopen Window > Extensions > Object Tracker in Premiere. Unsigned local CEP builds may require CEP developer mode.
+Then reopen **Window > Extensions > Object Tracker** in Premiere. Unsigned local CEP builds may require CEP developer mode. The extension currently declares Premiere versions 26.0 and later in its manifest, but the private data readers are only enabled for validated Premiere 26.x formats.
 
-For implementation details see [implementation status](docs/implementation-status.md), [PRMF v3 findings](docs/object-mask-prmf-v3-findings.md), and the [historical reference panel analysis](docs/reference-tracker-analysis.md).
+For implementation and validation details, see [implementation status](docs/implementation-status.md), [PRMF v3 findings](docs/object-mask-prmf-v3-findings.md), and [historical reference panel analysis](docs/reference-tracker-analysis.md).

@@ -18,16 +18,18 @@ The decoder identifies Object Mask data when the linked sidecars pass the regist
 
 Object Mask frames are reported only after the linked sidecars, registered record layout, payload coverage, source dimensions, source-frame timing, overlap, and frame continuity pass validation. The decoder allows at most one missing frame at either clip boundary and rejects interior gaps, unresolved rectangle conflicts, and changing source dimensions.
 
-### Apply motion
+### Panel workflow and apply motion
+
+The current panel has three source/target actions: **Detect**, **Use Selection**, and **Apply Tracking**. Detect saves the project and reads the selected source clip. Use Selection records exactly one currently selected timeline video clip or graphic as the target. Apply rechecks that the same clip is still selected before writing. The panel does not currently expose a Clear Generated Keys button.
 
 | Action | Current implementation |
 |---|---|
 | Follow | Uses Transform Position. Keeps the selected target's existing Position as the baseline and applies the tracked center delta from the first overlapping frame. |
 | Follow with Auto Scale | Requires validated Object Mask bounds. Scales each target axis from its existing Scale baseline by sqrt((current width / reference width) × (current height / reference height)). Scale-up grows the target; scale-down shrinks it. |
 | Stabilize | Uses the selected target's built-in Motion Position and writes inverse movement. It does not add Transform, animate Scale, or copy the source Object Mask to the target. |
-| Clear | Removes recorded keys only when their timestamp and value still match. It restores the original static baseline when appropriate and preserves edited or unrelated keys. |
+| Clear generated keys | A guarded host-side `clearGeneratedPositionKeys` routine exists in JSX, but the panel does not call it, retain the generated-key record, or expose a clear action. Treat clearing as unavailable from the current UI; remove keys through Premiere's Effect Controls. |
 
-The X and Y controls select which Position axes to move. Auto Scale is only available in Follow mode when the cached track has validated bounds. The former Fit target frame control was removed.
+The X and Y controls select which Position axes to move, and at least one must be selected. Auto Scale is only available in Follow mode when the cached track has validated bounds. The former Fit target frame control was removed. A detected track is cached in panel local storage and can be restored when the panel is reopened; generated-key records are not currently retained by the UI.
 
 ### Coordinate and target behavior
 
@@ -64,7 +66,7 @@ The current JSX implements Object Mask Stabilize through Motion Position only. A
 - Adds Transform through QE only for Follow when needed, then verifies the component before writing.
 - Auto Scale requires positive, readable, unanimated Transform Scale values and unique Scale properties.
 - Reads each generated key back. Write failures trigger rollback attempts.
-- Clear checks recorded time and value before removing keys.
+- The JSX clear routine checks recorded time and value before removing keys, but it is not currently wired to the panel and cannot be used through the shipped UI.
 
 ## Reproduce the checks
 
