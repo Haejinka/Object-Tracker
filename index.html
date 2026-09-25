@@ -10,67 +10,75 @@
 <body>
   <header class="topbar">
     <div class="brand-mark" aria-hidden="true">OT</div>
-    <div>
+    <div class="brand-copy">
       <h1>Object Tracker</h1>
       <p id="connectionStatus" class="subtle">Connecting to Premiere Pro…</p>
     </div>
   </header>
 
   <main>
-    <section class="card workflow-card">
-      <div class="section-heading">
-        <h2>Track to Target</h2>
-        <span class="phase-tag">PHASE 3–7</span>
+    <section class="utility-panel" aria-label="Object tracking controls">
+      <section class="content-section" aria-labelledby="sourceHeading">
+        <div class="section-heading">
+          <h2 id="sourceHeading">Source</h2>
+          <button id="readTrackButton" class="button button-quiet" type="button" disabled>Detect</button>
+        </div>
+        <div id="trackSource" class="source-summary" aria-live="polite">
+          <span class="state-dot" aria-hidden="true"></span>
+          <span class="source-copy"><span id="trackSourceText">Select the clip with the tracked Object Mask.</span><span id="trackTrackMeta" class="source-meta"></span></span>
+        </div>
+      </section>
+
+      <div class="divider"></div>
+
+      <section class="content-section" aria-labelledby="targetHeading">
+        <div class="section-heading">
+          <h2 id="targetHeading">Target</h2>
+          <button id="useSelectionButton" class="button button-quiet" type="button" disabled>Use Selection</button>
+        </div>
+        <div id="targetSummary" class="target-summary" aria-live="polite">
+          <span id="targetName">No target selected</span>
+          <span id="targetType" class="target-type"></span>
+        </div>
+      </section>
+
+      <div class="divider"></div>
+
+      <section class="content-section" aria-labelledby="trackingHeading">
+        <div class="section-heading tracking-heading">
+          <h2 id="trackingHeading">Tracking</h2>
+        </div>
+        <div class="settings-row mode-row">
+          <span class="field-label">Mode</span>
+          <div class="segmented" role="group" aria-label="Tracking mode">
+            <label><input type="radio" name="trackMode" value="follow" checked><span>Follow</span></label>
+            <label><input type="radio" name="trackMode" value="stabilize"><span>Stabilize</span></label>
+          </div>
+        </div>
+        <div class="transform-row">
+          <span class="field-label">Transform</span>
+          <div class="transform-options">
+            <span class="transform-property">Position</span>
+            <label class="axis-option"><input id="xAxis" type="checkbox" checked> X</label>
+            <label class="axis-option"><input id="yAxis" type="checkbox" checked> Y</label>
+            <label class="transform-option scale-option" title="Follows validated changes in the Object Mask size."><input id="autoScale" type="checkbox" disabled> Scale</label>
+          </div>
+        </div>
+      </section>
+
+      <div class="divider"></div>
+
+      <button id="applyTrackButton" class="button button-primary action-button" type="button" disabled>
+        <span class="button-spinner" aria-hidden="true"></span>
+        <span id="applyButtonText">Apply Tracking</span>
+      </button>
+
+      <div id="resultStatus" class="result-status" role="status" aria-live="polite">
+        <span class="status-indicator" aria-hidden="true"></span>
+        <span id="statusText">Ready</span>
       </div>
-      <p class="help-text">Select the timeline clip with a tracked Premiere mask, then read its motion. Select a target clip or graphic and apply the cached track.</p>
-      <p class="help-text">Follow moves a target with the subject using Transform Position. Stabilize counters movement using the clip's Motion Position only, leaving the Object Mask and size alone. Auto Scale is available in Follow mode when mask bounds are validated.</p>
-      <div class="track-source-card" aria-live="polite" aria-atomic="true">
-        <strong class="track-source-heading">Track data currently loaded</strong>
-        <div id="trackSource" class="track-source">No track loaded</div>
-      </div>
-      <div class="button-row">
-        <button id="readTrackButton" class="button button-primary" type="button">Read Track Source</button>
-        <button id="applyTrackButton" class="button" type="button" disabled>Apply to Selected Target</button>
-      </div>
-      <fieldset class="mode-options">
-        <legend>Mode</legend>
-        <label><input type="radio" name="trackMode" value="follow" checked> Follow</label>
-        <label><input type="radio" name="trackMode" value="stabilize"> Stabilize</label>
-      </fieldset>
-      <fieldset class="mode-options axis-options">
-        <legend>Motion scaling and axes</legend>
-        <label title="Change target size as the tracked object changes size"><input id="autoScale" type="checkbox" disabled> Auto Scale</label>
-        <label><input id="xAxis" type="checkbox" checked> X</label>
-        <label><input id="yAxis" type="checkbox" checked> Y</label>
-      </fieldset>
-      <div class="button-row">
-        <button id="clearKeysButton" class="button" type="button" disabled>Clear Generated Keys on Selected Target</button>
-      </div>
-      <div id="resultStatus" class="result-status" role="status" aria-live="polite">Ready</div>
-      <p class="source-note">Auto Scale follows validated Object Mask size changes. It keeps the target's starting size as its reference.</p>
+
     </section>
-
-    <details class="card diagnostics-card">
-      <summary>Diagnostics</summary>
-      <p class="help-text">Inspect Premiere's scripting properties and scan candidate keyframe streams in the saved project.</p>
-      <div class="button-row">
-        <button id="inspectButton" class="button" type="button">Inspect selected clip</button>
-        <button id="trackButton" class="button" type="button">Check exposed track data</button>
-      </div>
-      <div class="button-row">
-        <button id="projectTrackButton" class="button" type="button">Scan saved project</button>
-      </div>
-    </details>
-
-    <section class="card report-card">
-      <div class="section-heading">
-        <h2>Structured report</h2>
-        <button id="copyButton" class="button button-small" type="button" disabled>Copy JSON</button>
-      </div>
-      <pre id="report" aria-label="Inspector output">No report yet. Choose a command above.</pre>
-    </section>
-
-      <p class="footnote">Read Track Source saves the open project before reading its mask data. Transform keyframe writes are editable Premiere effect data; existing Position animation is preserved and causes the operation to stop.</p>
   </main>
 
   <script src="js/CSInterface.js"></script>

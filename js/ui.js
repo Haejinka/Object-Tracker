@@ -1,80 +1,89 @@
 (function (global) {
   "use strict";
 
-  var statusElement, connectionElement, reportElement, copyButton, sourceElement;
-  var readButton, applyButton, clearButton;
-  var autoScaleInput;
+  var statusElement, statusTextElement, connectionElement;
+  var sourceElement, sourceTextElement, sourceMetaElement, targetSummary, targetName, targetType;
+  var readButton, useSelectionButton, applyButton, applyButtonText, autoScaleInput;
+  var modeInputs, axisInputs;
   var trackHasValidatedBounds = false;
+  var selectedTargetId = null;
   var TRACK_KEY = "objectTracker.normalizedTrack.v2";
-  var GENERATED_KEY = "objectTracker.generatedKeys.v1";
+  var statusResetTimer = null;
 
   function setStatus(message, kind) {
-    statusElement.textContent = message;
+    statusTextElement.textContent = message;
     statusElement.setAttribute("data-kind", kind || "");
   }
 
-  function showReport(result) {
-    var json = JSON.stringify(result, null, 2);
-    global.ObjectTrackerState.lastReport = result;
-    global.ObjectTrackerState.lastJson = json;
-    reportElement.textContent = json;
-    copyButton.disabled = false;
+  function updateControls() {
+    var busy = global.ObjectTrackerState.busy;
+    var hostReady = global.ObjectTrackerState.hostReady;
+    readButton.disabled = busy || !hostReady;
+    useSelectionButton.disabled = busy || !hostReady;
+    applyButton.disabled = busy || !hostReady || !global.ObjectTrackerState.cachedTrack || !selectedTargetId;
+    for (var i = 0; i < modeInputs.length; i++) modeInputs[i].disabled = busy;
+    for (var j = 0; j < axisInputs.length; j++) axisInputs[j].disabled = busy;
+    updateScaleControl();
   }
 
-  function setBusy(busy, message) {
+  function setBusy(busy, message, stage) {
     global.ObjectTrackerState.busy = busy;
-    readButton.disabled = busy || !global.ObjectTrackerState.hostReady;
-    applyButton.disabled = busy || !global.ObjectTrackerState.hostReady || !global.ObjectTrackerState.cachedTrack;
-    clearButton.disabled = busy || !global.ObjectTrackerState.hostReady || !global.ObjectTrackerState.generatedRecords.length;
-    if (message) setStatus(message, "");
+    applyButton.setAttribute("data-busy", busy ? "true" : "false");
+    applyButtonText.textContent = busy && stage === "apply" ? "Applying Tracking…" : "Apply Tracking";
+    updateControls();
+    if (message) setStatus(message, busy ? "busy" : "");
   }
 
-  function reportResult(result) {
-    showReport(result);
-    setStatus((result && result.message) || "Command complete; see the structured report.", result && result.success ? "success" : "warning");
+  function friendlyError(result, fallback) {
+    var message = result && typeof result.message === "string" ? result.message : "";
+    if (!message || /^(Error:|TypeError:|ReferenceError:)/i.test(message)) return fallback;
+    return message;
   }
 
-  function runCommand(functionName, pendingMessage) {
-    if (global.ObjectTrackerState.busy) return;
-    setBusy(true, pendingMessage);
-    global.ObjectTrackerBridge.call(functionName, function (result) {
-      setBusy(false);
-      reportResult(result);
-    });
+  function showResultError(result, fallback) {
+    setStatus(friendlyError(result, fallback), "error");
+  }
+
+  function setSourceEmpty(message) {
+    sourceTextElement.textContent = message;
+    sourceMetaElement.textContent = "";
+    sourceElement.removeAttribute("data-ready");
   }
 
   function saveCachedTrack(track) {
     global.ObjectTrackerState.cachedTrack = track;
     try { localStorage.setItem(TRACK_KEY, JSON.stringify(track)); } catch (error) {}
     var source = track.source || {};
-    var mask = track.mask || {};
-    var report = track.trackSourceReport || {};
-    var tracker = report.trackerParameter || {};
+    var maskLabel = source.maskSubtypeClassification === "object-mask" ? "Object Mask" : "Mask track";
     trackHasValidatedBounds = !!(global.ObjectTrackerTrackingPipeline && global.ObjectTrackerTrackingPipeline.hasValidatedBounds(track));
-    var canScale = trackHasValidatedBounds;
-    updateAutoScaleControl();
-    sourceElement.textContent = "Clip: " + (track.sourceClipName || source.sourceClipName || "Tracked clip") +
-      "\nData: " + (source.streamFormat || source.source || "Premiere mask tracker") +
-      "\nMask: " + (mask.instanceName || "unnamed") + " (component " + (mask.componentId || "unknown") + ")" +
-      "\nTracker parameter: " + (tracker.id || "unknown") +
-      "\nSamples read: " + (track.sampleCount || 0) +
-      "\nMask subtype: " + (source.maskSubtypeClassification || report.objectMaskClassification || "unconfirmed") +
-      "\nBounds / scale: " + (canScale ? "validated" : "unavailable") +
-      "\nParser: " + ((report.formatDetection && report.formatDetection.parserUsed) || "unknown");
+    sourceTextElement.textContent = track.sourceClipName || source.sourceClipName || "Tracked clip";
+    sourceMetaElement.textContent = maskLabel + " · " + (track.sampleCount || 0) + " frames";
     sourceElement.setAttribute("data-ready", "true");
-    applyButton.disabled = global.ObjectTrackerState.busy || !global.ObjectTrackerState.hostReady;
+    updateControls();
   }
 
   function clearCachedTrack() {
     global.ObjectTrackerState.cachedTrack = null;
     trackHasValidatedBounds = false;
     try { localStorage.removeItem(TRACK_KEY); } catch (error) {}
-    if (autoScaleInput) {
-      updateAutoScaleControl();
-    }
-    sourceElement.textContent = "No track loaded";
-    sourceElement.removeAttribute("data-ready");
-    applyButton.disabled = true;
+    setSourceEmpty("Select the clip with the tracked Object Mask.");
+    updateControls();
+  }
+
+  function setTargetEmpty(message) {
+    selectedTargetId = null;
+    targetName.textContent = message || "No target selected";
+    targetType.textContent = "";
+    targetSummary.setAttribute("data-empty", "true");
+    updateControls();
+  }
+
+  function setTarget(clip) {
+    selectedTargetId = String(clip.nodeId);
+    targetName.textContent = clip.name || "Selected timeline clip";
+    targetType.textContent = "Timeline clip or graphic";
+    targetSummary.removeAttribute("data-empty");
+    updateControls();
   }
 
   function restoreState() {
@@ -85,18 +94,13 @@
         if (parsedTrack && parsedTrack.samples && parsedTrack.samples.length >= 2 && parsedTrack.source) saveCachedTrack(parsedTrack);
       }
     } catch (error) { try { localStorage.removeItem(TRACK_KEY); } catch (removeError) {} }
-    try {
-      var savedRecords = localStorage.getItem(GENERATED_KEY);
-      var parsedRecords = savedRecords ? JSON.parse(savedRecords) : [];
-      global.ObjectTrackerState.generatedRecords = parsedRecords instanceof Array ? parsedRecords : [];
-    } catch (error) { global.ObjectTrackerState.generatedRecords = []; }
-    clearButton.disabled = global.ObjectTrackerState.generatedRecords.length === 0;
+    updateControls();
   }
 
   function readTrack() {
-    if (global.ObjectTrackerState.busy) return;
+    if (global.ObjectTrackerState.busy || !global.ObjectTrackerState.hostReady) return;
     clearCachedTrack();
-    setBusy(true, "Saving the Premiere project, then reading the selected clip's tracker stream…");
+    setBusy(true, "Reading Object Mask…", "read");
     global.ObjectTrackerProjectReader.extractSelected(function (result) {
       setBusy(false);
       if (result && result.success && result.normalizedTrack) {
@@ -110,9 +114,27 @@
           sidecarSummary: result.sidecarSummary
         };
         saveCachedTrack(result.normalizedTrack);
+        setStatus("Object Mask detected", "");
+      } else {
+        showResultError(result, "Could not read a tracked mask. Select the clip with the Object Mask and try again.");
       }
-      reportResult(result);
-      if (result && result.success) setStatus("Track loaded: " + result.normalizedTrack.sampleCount + " samples. Select a target clip and apply.", "success");
+    });
+  }
+
+  function useCurrentSelection() {
+    if (global.ObjectTrackerState.busy || !global.ObjectTrackerState.hostReady) return;
+    setBusy(true, "Reading timeline selection…", "target");
+    global.ObjectTrackerBridge.call("savedProjectContext", function (context) {
+      setBusy(false);
+      if (!context || !context.success) { setTargetEmpty(); showResultError(context, "Could not read the selected target."); return; }
+      var clips = context.selectedVideoClips || [];
+      if (clips.length !== 1) {
+        setTargetEmpty();
+        setStatus(clips.length ? "Select one target clip or graphic." : "Select a target clip or graphic in the timeline.", "warning");
+        return;
+      }
+      setTarget(clips[0]);
+      setStatus("Target selected", "");
     });
   }
 
@@ -121,161 +143,101 @@
     return selected ? selected.value : "follow";
   }
 
-  function updateAutoScaleControl() {
+  function updateScaleControl() {
     if (!autoScaleInput) return;
     var stabilize = selectedMode() === "stabilize";
-    if (stabilize) autoScaleInput.checked = false;
-    autoScaleInput.disabled = stabilize || !trackHasValidatedBounds;
+    var unavailable = stabilize || !trackHasValidatedBounds;
+    if (unavailable) autoScaleInput.checked = false;
+    autoScaleInput.disabled = global.ObjectTrackerState.busy || unavailable;
     autoScaleInput.title = stabilize
-      ? "Stabilize writes Motion Position only. Auto Scale is for Follow mode."
-      : (trackHasValidatedBounds
-        ? "Change target size as validated mask bounds change"
-        : "Auto Scale needs decoded and validated per-frame mask bounds; this track currently contains point motion only.");
+      ? "Scale tracking is available in Follow mode only."
+      : (!trackHasValidatedBounds
+        ? "Scale needs validated mask-size data from the detected Object Mask track."
+        : "Follows validated changes in the Object Mask size.");
+  }
+
+  function applyTrackWithOptions(options) {
+    setStatus("Writing Position keyframes…", "busy");
+    global.ObjectTrackerBridge.callWithArguments("applyTrackToSelectedTarget", [JSON.stringify(global.ObjectTrackerState.cachedTrack), JSON.stringify(options)], function (result) {
+      setBusy(false);
+      if (!result || !result.success) {
+        showResultError(result, "Tracking could not be applied. Check the selected target clip and try again.");
+        return;
+      }
+      var count = result.generatedKeys ? result.generatedKeys.length : 0;
+      setStatus("Tracking applied" + (count ? " · " + count + " frames" : ""), "success");
+      if (statusResetTimer) clearTimeout(statusResetTimer);
+      statusResetTimer = setTimeout(function () {
+        if (!global.ObjectTrackerState.busy) setStatus("Ready", "");
+      }, 4500);
+    });
   }
 
   function applyTrack() {
-    if (global.ObjectTrackerState.busy || !global.ObjectTrackerState.cachedTrack) return;
+    if (global.ObjectTrackerState.busy || !global.ObjectTrackerState.cachedTrack || !selectedTargetId) return;
     var options = {
       mode: selectedMode(),
-      autoScale: document.getElementById("autoScale").checked,
+      autoScale: autoScaleInput.checked,
       x: document.getElementById("xAxis").checked,
       y: document.getElementById("yAxis").checked
     };
-    if (!options.x && !options.y) { setStatus("Choose at least one Position axis.", "warning"); return; }
-    setBusy(true, options.mode === "stabilize" ? "Writing inverse motion to Motion Position only…" : "Adding or finding Transform and writing Position keys…");
-    global.ObjectTrackerBridge.callWithArguments("applyTrackToSelectedTarget", [JSON.stringify(global.ObjectTrackerState.cachedTrack), JSON.stringify(options)], function (result) {
-      setBusy(false);
-      reportResult(result);
-      if (result && result.success && result.generatedKeys && result.generatedKeys.length) {
-        var record = {
-          targetNodeId: result.targetNodeId,
-          sequenceId: result.sequenceId,
-          transformMatchName: result.transform && result.transform.matchName || null,
-          positionComponentMatchName: result.positionComponent && result.positionComponent.matchName || (result.transform && result.transform.matchName) || null,
-          positionComponentType: result.positionComponentType || "transform",
-          generatedKeys: result.generatedKeys,
-          generatedScaleKeys: result.generatedScaleKeys || [],
-          scaleBaseline: result.scaleBaseline || [],
-          baseline: result.baseline,
-          initialTimeVarying: result.initialTimeVarying,
-          initialKeyCount: result.initialKeyCount,
-          targetClip: result.targetClip,
-          mode: result.mode,
-          autoScale: result.autoScale
-        };
-        var records = global.ObjectTrackerState.generatedRecords;
-        var found = -1;
-        for (var i = 0; i < records.length; i++) if (String(records[i].targetNodeId) === String(record.targetNodeId) && String(records[i].sequenceId) === String(record.sequenceId)) found = i;
-        if (found >= 0) records[found] = record;
-        else records.push(record);
-        try { localStorage.setItem(GENERATED_KEY, JSON.stringify(records)); } catch (error) {}
-        clearButton.disabled = false;
-        var positionLabel = result.positionPropertyLabel || (result.positionComponentType === "motion" ? "Motion Position" : "Transform Position");
-        var scaleLabel = result.generatedScaleKeys && result.generatedScaleKeys.length ? " and " + result.generatedScaleKeys.length + " Transform Scale keys" : "";
-        setStatus("Wrote and verified " + result.keyCount + " " + positionLabel + " keys" + scaleLabel + " on “" + result.targetClip + "”.", "success");
-      }
-    });
-  }
-
-  function clearGeneratedKeys() {
-    if (global.ObjectTrackerState.busy || !global.ObjectTrackerState.generatedRecords.length) return;
-    setBusy(true, "Checking selected target and removing only recorded keys…");
-    global.ObjectTrackerBridge.call("savedProjectContext", function (context) {
-      if (!context || !context.success) { setBusy(false); reportResult(context); return; }
-      var selected = context.selectedVideoClips || [];
-      if (selected.length !== 1) {
-        setBusy(false);
-        reportResult({ success: false, stage: "clear-generated-keys", code: "SELECT_RECORDED_TARGET", message: "Select the same target clip that received Object Tracker's keys." });
-        return;
-      }
-      var record = null;
-      for (var i = 0; i < global.ObjectTrackerState.generatedRecords.length; i++) {
-        var candidate = global.ObjectTrackerState.generatedRecords[i];
-        if (String(candidate.targetNodeId) === String(selected[0].nodeId) && String(candidate.sequenceId) === String(context.sequenceId)) { record = candidate; break; }
-      }
-      if (!record) {
-        setBusy(false);
-        reportResult({ success: false, stage: "clear-generated-keys", code: "NO_GENERATED_KEYS_FOR_TARGET", message: "No Object Tracker key record matches the selected clip." });
-        return;
-      }
-      global.ObjectTrackerBridge.callWithArguments("clearGeneratedPositionKeys", [JSON.stringify(record)], function (result) {
-        setBusy(false);
-        reportResult(result);
-        if (result && result.success) {
-          global.ObjectTrackerState.generatedRecords = global.ObjectTrackerState.generatedRecords.filter(function (entry) {
-            return !(String(entry.targetNodeId) === String(record.targetNodeId) && String(entry.sequenceId) === String(record.sequenceId));
-          });
-          try { localStorage.setItem(GENERATED_KEY, JSON.stringify(global.ObjectTrackerState.generatedRecords)); } catch (error) {}
-          clearButton.disabled = global.ObjectTrackerState.generatedRecords.length === 0;
-          if (result.changedKeyCount) setStatus("Removed " + result.removedKeyCount + " generated keys; " + result.changedKeyCount + " edited keys were kept.", "warning");
-        }
-      });
-    });
-  }
-
-  function copyReport() {
-    var text = global.ObjectTrackerState.lastJson;
-    if (!text) return;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { setStatus("JSON copied to clipboard.", "success"); }, function () { setStatus("Clipboard access was denied. The report remains visible below.", "warning"); });
+    if (options.autoScale && !trackHasValidatedBounds) {
+      setStatus("Scale needs validated mask-size data. Detect the Object Mask track again.", "warning");
       return;
     }
-    var temporary = document.createElement("textarea");
-    temporary.value = text;
-    temporary.setAttribute("readonly", "readonly");
-    temporary.style.position = "fixed";
-    temporary.style.left = "-10000px";
-    document.body.appendChild(temporary);
-    temporary.select();
-    var copied = false;
-    try { copied = document.execCommand("copy"); } catch (error) { copied = false; }
-    document.body.removeChild(temporary);
-    setStatus(copied ? "JSON copied to clipboard." : "Copy failed; the report remains visible below.", copied ? "success" : "warning");
+    if (!options.x && !options.y) { setStatus("Choose X, Y, or both for Position.", "warning"); return; }
+    setBusy(true, "Applying Tracking…", "apply");
+    global.ObjectTrackerBridge.call("savedProjectContext", function (context) {
+      if (!context || !context.success) {
+        setBusy(false);
+        showResultError(context, "Could not confirm the selected target.");
+        return;
+      }
+      var clips = context.selectedVideoClips || [];
+      if (clips.length !== 1 || String(clips[0].nodeId) !== selectedTargetId) {
+        setBusy(false);
+        setStatus("Select the chosen target in the timeline, then apply tracking.", "warning");
+        return;
+      }
+      applyTrackWithOptions(options);
+    });
   }
 
   global.ObjectTrackerUI = {
     initialize: function () {
       statusElement = document.getElementById("resultStatus");
+      statusTextElement = document.getElementById("statusText");
       connectionElement = document.getElementById("connectionStatus");
-      reportElement = document.getElementById("report");
-      copyButton = document.getElementById("copyButton");
       sourceElement = document.getElementById("trackSource");
+      sourceTextElement = document.getElementById("trackSourceText");
+      sourceMetaElement = document.getElementById("trackTrackMeta");
+      targetSummary = document.getElementById("targetSummary");
+      targetName = document.getElementById("targetName");
+      targetType = document.getElementById("targetType");
       readButton = document.getElementById("readTrackButton");
+      useSelectionButton = document.getElementById("useSelectionButton");
       applyButton = document.getElementById("applyTrackButton");
-      clearButton = document.getElementById("clearKeysButton");
+      applyButtonText = document.getElementById("applyButtonText");
       autoScaleInput = document.getElementById("autoScale");
-      var modeInputs = document.querySelectorAll('input[name="trackMode"]');
-      for (var modeIndex = 0; modeIndex < modeInputs.length; modeIndex++) modeInputs[modeIndex].addEventListener("change", updateAutoScaleControl);
-      readButton.disabled = true;
-      applyButton.disabled = true;
-      clearButton.disabled = true;
+      modeInputs = document.querySelectorAll('input[name="trackMode"]');
+      axisInputs = [document.getElementById("xAxis"), document.getElementById("yAxis")];
+      for (var modeIndex = 0; modeIndex < modeInputs.length; modeIndex++) modeInputs[modeIndex].addEventListener("change", updateControls);
+      setTargetEmpty();
+      setSourceEmpty("Select the clip with the tracked Object Mask.");
       restoreState();
-      updateAutoScaleControl();
 
       readButton.addEventListener("click", readTrack);
+      useSelectionButton.addEventListener("click", useCurrentSelection);
       applyButton.addEventListener("click", applyTrack);
-      clearButton.addEventListener("click", clearGeneratedKeys);
-      document.getElementById("inspectButton").addEventListener("click", function () { runCommand("inspectSelectedClip", "Inspecting selected timeline clip…"); });
-      document.getElementById("trackButton").addEventListener("click", function () { runCommand("inspectTrackCandidates", "Checking exposed Premiere tracking properties…"); });
-      document.getElementById("projectTrackButton").addEventListener("click", function () {
-        if (global.ObjectTrackerState.busy) return;
-        setBusy(true, "Reading saved Premiere project data…");
-        global.ObjectTrackerProjectReader.scan(function (result) { setBusy(false); reportResult(result); });
-      });
-      copyButton.addEventListener("click", copyReport);
-
       global.ObjectTrackerBridge.initializeHost(function (result) {
         global.ObjectTrackerState.hostReady = !!(result && result.success);
         if (result && result.success) {
-          connectionElement.textContent = "Connected to Premiere Pro " + result.host.version;
-          readButton.disabled = false;
-          applyButton.disabled = !global.ObjectTrackerState.cachedTrack;
-          clearButton.disabled = global.ObjectTrackerState.generatedRecords.length === 0;
-          setStatus(global.ObjectTrackerState.cachedTrack ? "Cached track ready. Select a target and apply." : "Select a timeline clip with a tracked Premiere mask.", "success");
+          connectionElement.textContent = "Premiere Pro " + result.host.version;
+          updateControls();
+          setStatus(global.ObjectTrackerState.cachedTrack ? "Tracked mask ready" : "Ready", "");
         } else {
           connectionElement.textContent = "Premiere connection unavailable";
-          setStatus((result && result.message) || "Could not initialize the ExtendScript bridge.", "error");
-          showReport(result);
+          setStatus("Premiere connection unavailable. Reopen the panel and try again.", "error");
         }
       });
     }
