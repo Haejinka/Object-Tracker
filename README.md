@@ -42,6 +42,12 @@ The mask source must be accessible through the saved project and its adjacent `M
 - The panel currently has no user-facing **Clear Generated Keys** control. Premiere keyframe writing is available through the panel, while the host-side clear routine is not connected to the UI. To remove keys, edit them in Premiere's Effect Controls.
 - Object Mask Stabilize is implemented through Motion Position, but its live write and rendered result have not been recorded as validated. Manual Effect Controls inspection and project reopen persistence checks are also outstanding.
 
+## Windows installer build
+
+Run `tools\\build-installer.ps1` to create `dist\\Object Tracker-Setup-0.1.0.exe`, a standard Windows installation wizard. Give the recipient that single EXE to install the panel. It installs for the current Windows user and enables the CEP 12 developer mode required by this unsigned extension. After setup, restart Premiere Pro and open **Window > Extensions > Object Tracker**.
+
+The install and quick-start guide is at [docs/install-and-use.md](docs/install-and-use.md). The installer places a copy beside the EXE as `README.txt` and in the installed extension folder as `README.md`.
+
 ## Install for development
 
 This CEP extension targets Adobe Premiere Pro 26+ and CEP 12. Copy the project folder to:
