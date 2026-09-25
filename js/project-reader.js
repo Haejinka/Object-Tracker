@@ -334,7 +334,7 @@
     var valid = [];
     masks.forEach(function (mask) {
       mask.trackerParameters.forEach(function (parameter) {
-        var parsedObjectMask = parameter.decoded.formatDetection && parameter.decoded.formatDetection.parserUsed === "parser-26.x-prmf-v3-frame-rectangles";
+        var parsedObjectMask = parameter.decoded.formatDetection && parameter.decoded.formatDetection.parserUsed === "parser-26.x-prmf-v3-gdeflate-mask-raster";
         if (parameter.sidecarReferenceCount > 0 || mask.classification === "object-mask") {
           if (parsedObjectMask && parameter.decoded.samples && parameter.decoded.samples.length >= 2) valid.push({ mask: mask, parameter: parameter });
         } else if (parameter.decoded.samples && parameter.decoded.samples.length >= 2) valid.push({ mask: mask, parameter: parameter });
@@ -351,7 +351,7 @@
       }); });
       var failure = resultError("NO_DECODED_AEMASK2_MASK_TRACK", masks.length
         ? (hasObjectMask
-          ? "An Object Mask component was found, but no PRMF v3 geometry passed the registered record, sidecar, and saved source-frame timing checks. No Object Mask frames were emitted."
+          ? "An Object Mask component was found, but no PRMF v3 mask raster passed the registered codec, geometry, sidecar, and saved source-frame timing checks. No Object Mask frames were emitted."
           : hasPrmfCandidates
             ? "This clip's linked PRMF sidecars could not be used safely" + (prmfFailureReason ? ": " + prmfFailureReason : ".") + " No track was used."
             : "AEMask2 mask components are attached to this clip, but none contains tracker samples in the registered Premiere 26.x 104-byte format.")
@@ -371,7 +371,7 @@
     var selected = valid[0];
     if (!global.ObjectTrackerTrackingPipeline) return resultError("TRACKING_NORMALIZER_UNAVAILABLE", "The tracking normalizer did not load; no keyframes were written.");
     var detectedSubtype = selected.mask.classification;
-    var objectMaskPrmf = detectedSubtype === "object-mask" && selected.parameter.decoded.formatDetection && selected.parameter.decoded.formatDetection.parserUsed === "parser-26.x-prmf-v3-frame-rectangles";
+    var objectMaskPrmf = detectedSubtype === "object-mask" && selected.parameter.decoded.formatDetection && selected.parameter.decoded.formatDetection.parserUsed === "parser-26.x-prmf-v3-gdeflate-mask-raster";
     var normalizedData = objectMaskPrmf
       ? global.ObjectTrackerTrackingPipeline.normalizeObjectMaskSamples(selected.parameter.decoded.samples)
       : global.ObjectTrackerTrackingPipeline.normalizeAEMaskSamples(selected.parameter.decoded.samples);
@@ -397,7 +397,7 @@
     }
 
     var extractionMessage = objectMaskPrmf
-      ? "Decoded validated per-frame Object Mask rectangles from the selected PRMF v3 sidecars."
+      ? "Decoded per-frame Object Mask outlines from the selected PRMF v3 sidecars and measured their center and bounds."
       : detectedSubtype === "object-mask"
       ? "Decoded the selected Object Mask component's AEMask2 point stream. Per-frame mask bounds and visual correlation are not validated."
       : detectedSubtype === "classic-mask"
@@ -428,12 +428,12 @@
         firstTrackedSequenceTime: firstSequenceTime
       },
       mask: { componentId: selected.mask.componentId, instanceName: selected.mask.instanceName },
-      trackerParameter: { id: selected.parameter.parameterId, keyCount: selected.parameter.keyCount, decodedSampleCount: samples.length, frameCoverage: selected.parameter.decoded.frameCoverage || null, payloadBytes: objectMaskPrmf ? null : PARSER.constants.trackerSampleBytes, streamFormat: objectMaskPrmf ? "PRMF v3 frame rectangles" : "AEMask2 Tracker / 104-byte samples", privateDataBinaryHash: selected.parameter.privateDataBinaryHash, sidecarReferenceCount: selected.parameter.sidecarReferenceCount, temporalSidecarCount: selected.parameter.decoded.temporalSidecarCount || null, untimedReferenceCandidates: selected.parameter.decoded.untimedSingleRecordReferences || [] },
+      trackerParameter: { id: selected.parameter.parameterId, keyCount: selected.parameter.keyCount, decodedSampleCount: samples.length, frameCoverage: selected.parameter.decoded.frameCoverage || null, decodedRasterCount: selected.parameter.decoded.decodedRasterCount || null, payloadBytes: objectMaskPrmf ? null : PARSER.constants.trackerSampleBytes, streamFormat: objectMaskPrmf ? "PRMF v3 GDeflate mask rasters" : "AEMask2 Tracker / 104-byte samples", privateDataBinaryHash: selected.parameter.privateDataBinaryHash, sidecarReferenceCount: selected.parameter.sidecarReferenceCount, temporalSidecarCount: selected.parameter.decoded.temporalSidecarCount || null, untimedReferenceCandidates: selected.parameter.decoded.untimedSingleRecordReferences || [] },
       timeMapping: hasTimeMapping ? { ticksPerSecond: TICKS_PER_SECOND, timelineRate: timelineRate, method: "clip start + (tracker source tick - TrackItem in-point) × TrackItem timeline/source duration ratio" } : null,
       normalizedTrack: {
         source: {
           source: objectMaskPrmf ? "Premiere Object Mask PRMF v3" : "Premiere AEMask2 mask tracker",
-          streamFormat: objectMaskPrmf ? "Premiere 26.x Object Mask / PRMF v3 frame rectangles" : "AE.ADBE AEMask2 Tracker / 104-byte samples",
+          streamFormat: objectMaskPrmf ? "Premiere 26.x Object Mask / PRMF v3 GDeflate mask rasters" : "AE.ADBE AEMask2 Tracker / 104-byte samples",
           maskSubtypeClassification: selected.mask.classification,
           sourceClipName: selectedClip.name,
           sourceNodeId: String(selectedClip.nodeId),

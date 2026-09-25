@@ -30,6 +30,7 @@ const sidecarFiles = fs.existsSync(sidecarDirectory)
 
 global.window = global;
 global.ObjectTrackerBridge = {};
+require(path.join(runtimeRoot, "js", "gdeflate.js"));
 require(path.join(runtimeRoot, "js", "object-mask-parser.js"));
 require(path.join(runtimeRoot, "js", "tracking-pipeline.js"));
 require(path.join(runtimeRoot, "js", "project-reader.js"));
@@ -46,7 +47,7 @@ const result = global.ObjectTrackerProjectReader.extractFromXml(xml, { nodeId: t
 });
 
 if (expectObjectMask) {
-  assert.strictEqual(result.success, true, "the selected TrackItem should decode validated PRMF v3 Object Mask rectangles");
+  assert.strictEqual(result.success, true, "the selected TrackItem should decode validated PRMF v3 Object Mask rasters");
   assert.strictEqual(result.objectMaskClassification, "object-mask");
   assert.strictEqual(result.normalizedTrack.capabilities.bounds, true);
   assert.strictEqual(result.normalizedTrack.capabilities.scale, true);

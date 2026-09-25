@@ -1,0 +1,22 @@
+{
+  "static": {
+    "0": "75ab14092c345af29f9f24c7aa60c9c4d5b9b3a8510871dfbacaf51994759b62",
+    "19": "90957d11986eb434ad5e8ed0bc21eaf94273fa8ec3517cf7635ad13fca17646f"
+  },
+  "horizontal": {
+    "0": "f8cf1298d4f898dd2e13f088fc03838ddbda26df2e91ede647abb4db1b281fc3",
+    "19": "625f0d46e90f933a2b6243ddc1bc1c78b1d83823e6de33d95888a8e89157a4ec"
+  },
+  "vertical": {
+    "0": "f8cf1298d4f898dd2e13f088fc03838ddbda26df2e91ede647abb4db1b281fc3",
+    "19": "e6e2817faefaf2167e49c16c1639857b023615918c93f570d8c29db0ac7c6e48"
+  },
+  "scale-up": {
+    "0": "f3f578b3605d2a38cf99284b36f0fb94c99212cece53086c7a3c5ac98b3334aa",
+    "19": "6343e84f8369bfa1dc21385c0b45e61b2f07b3e77d6e803c21642b9994c0f98f"
+  },
+  "scale-down": {
+    "0": "c2c45f2de761ba1c4c14109a1c15a6ecb7a772eadd8de26eba601c4661809756",
+    "19": "8d3109f860fda32c84dc30b242c2a1a117d8beb033679e1d74c9068cd6de10b5"
+  }
+}

@@ -2,6 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
+const crypto = require("crypto");
 const vm = require("vm");
 
 const controlsRoot = path.resolve(process.argv[2] || "C:\\controls");
@@ -9,6 +10,7 @@ const manifestPath = path.join(controlsRoot, "object-mask-control-manifest.json"
 const controlManifest = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, "utf8")) : { samples: [] };
 global.window = global;
 global.$ = { _ObjectTracker: {} };
+require(path.join(__dirname, "..", "js", "gdeflate.js"));
 require(path.join(__dirname, "..", "js", "object-mask-parser.js"));
 require(path.join(__dirname, "..", "js", "tracking-pipeline.js"));
 require(path.join(__dirname, "..", "js", "project-reader.js"));
@@ -48,12 +50,36 @@ function readControl(sample, invalidSidecar) {
   assert.strictEqual(result.normalizedTrack.capabilities.bounds, true);
   assert.strictEqual(result.normalizedTrack.capabilities.scale, true);
   assert.strictEqual(result.normalizedTrack.capabilities.rotation, false);
+  assert.strictEqual(result.trackerParameter.decodedRasterCount, 20, sample.behavior + ": every tracked frame must decode a mask raster");
+  assert.strictEqual(result.formatDetection.parserUsed, "parser-26.x-prmf-v3-gdeflate-mask-raster");
   assert.strictEqual(global.ObjectTrackerTrackingPipeline.hasValidatedBounds(result.normalizedTrack), true);
   assert(result.normalizedTrack.samples.every(frame => Number.isFinite(frame.x) && Number.isFinite(frame.y) && frame.width > 0 && frame.height > 0));
+  assert(result.normalizedTrack.samples.every(frame => frame.geometrySource === "GDeflate-decoded mask outline"));
   assert(result.normalizedTrack.samples.every(frame => Number.isFinite(frame.sequenceTime)), sample.behavior + ": source times must map to sequence time");
   assert(result.normalizedTrack.samples.every((frame, index, all) => !index || frame.sequenceTime > all[index - 1].sequenceTime), sample.behavior + ": sequence times must be strictly increasing");
   const frames = result.normalizedTrack.samples;
   return { behavior: sample.behavior, result, frames };
+}
+
+const referenceRasterHashes = require(path.join(__dirname, "fixtures", "object-mask-gdeflate-reference-hashes.json"));
+for (const sample of cases) {
+  const directory = path.join(controlsRoot, sample.directory, path.basename(sample.project, path.extname(sample.project)) + " Masks");
+  const files = fs.readdirSync(directory).filter(name => /\.prmf$/i.test(name)).map(filename => ({
+    filename,
+    bytes: fs.readFileSync(path.join(directory, filename))
+  }));
+  const temporal = files.map(item => ({ item, parsed: global.ObjectTrackerObjectMaskParser.parsePrmfV3(item.bytes) }))
+    .filter(candidate => candidate.parsed.frameCount > 1)
+    .sort((a, b) => b.parsed.frameCount - a.parsed.frameCount)[0];
+  assert(temporal, sample.behavior + ": temporal PRMF sidecar must exist");
+  for (const frameIndex of [0, 19]) {
+    const frame = temporal.parsed.frames.find(item => item.payloadIndex === frameIndex);
+    assert(frame, sample.behavior + ": expected frame " + frameIndex + " must exist");
+    const payload = temporal.item.bytes.subarray(frame.payloadOffset, frame.payloadOffset + frame.payloadBytes);
+    const raster = global.ObjectTrackerGDeflate.decode(payload, frame.width * frame.height);
+    const digest = crypto.createHash("sha256").update(raster).digest("hex");
+    assert.strictEqual(digest, referenceRasterHashes[sample.behavior][String(frameIndex)], sample.behavior + " frame " + frameIndex + ": GDeflate raster must match the independent reference decoder");
+  }
 }
 
 function range(values) { return Math.max(...values) - Math.min(...values); }

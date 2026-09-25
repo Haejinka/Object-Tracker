@@ -19,9 +19,9 @@ The details above describe the installed reference version that was inspected. T
 Object Tracker reads the selected timeline clip's own saved component chain instead of choosing a project-wide candidate. It supports two validated Premiere 26.x source formats:
 
 - Classic AEMask2's observed 104-byte point stream supplies point motion only.
-- Object Mask's linked PRMF v3 sidecars supply validated per-frame rectangle centers and bounds after record, timing, and geometry checks.
+- Object Mask's linked PRMF v3 sidecars supply per-frame GDeflate outline rasters. The panel measures raster bounds and row-span centroids after record, codec, raster, timing, and geometry checks.
 
-Follow writes Transform Position and can optionally apply Object Mask size changes to Transform Scale. Stabilize writes inverse movement to the target's built-in Motion Position only; it does not add Transform or change Scale. A guarded clear routine exists in the host JSX, but the current panel does not expose or call it, so users remove generated keys through Premiere's Effect Controls.
+Follow writes Transform Position, can optionally apply Object Mask size changes to Transform Scale, and can set the Transform effect's native Shutter Angle to at least 180°. If **Use Composition's Shutter Angle** is on, the writer turns it off and verifies the explicit Transform value. Stabilize writes inverse movement to the target's built-in Motion Position only; it does not add Transform or change Scale. A guarded clear routine exists in the host JSX, but the current panel does not expose or call it, so users remove generated keys through Premiere's Effect Controls.
 
 The old exploratory project IDs and hash descriptions in earlier notes referred to individual saved projects. TrackItem IDs and Object Mask private hashes vary between projects and saves. Current source detection follows the selected tracker's UUID sidecar links and validates their contents.
 

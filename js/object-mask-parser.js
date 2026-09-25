@@ -5,6 +5,7 @@
   var TRACKER_SAMPLE_BYTES = 104;
   var TICKS_PER_SECOND = 254016000000;
   var CLASSIC_MASK_PRIVATE_DATA_HASH = "801239b7-73d1-ddc5-2fb7-1cc30000007c";
+  var OBJECT_MASK_PARSER_ID = "parser-26.x-prmf-v3-gdeflate-mask-raster";
 
   function versionMajor(version) {
     var match = /^(\d+)/.exec(String(version || ""));
@@ -282,12 +283,19 @@
   function decodeObjectMaskSidecars(inputs, expectedTimeTicks, metadata) {
     metadata = metadata || {};
     if (versionMajor(metadata.premiereVersion) !== 26) throw new Error("PRMF Object Mask geometry has only been validated on Premiere 26.x.");
+    var rasterCodec = global.ObjectTrackerGDeflate;
+    if (!rasterCodec || typeof rasterCodec.decode !== "function" || typeof rasterCodec.measureRaster !== "function") {
+      throw new Error("The validated GDeflate Object Mask raster decoder is unavailable.");
+    }
     var sidecars = [];
+    var sidecarBytes = [];
     for (var i = 0; i < inputs.length; i++) {
       var sidecar = parsePrmfV3(inputs[i].bytes);
       sidecar.uuid = String(inputs[i].uuid || "").toLowerCase();
       sidecar.file = inputs[i].file || null;
+      sidecar.inputIndex = i;
       sidecars.push(sidecar);
+      sidecarBytes.push(inputs[i].bytes);
     }
     var temporal = [], references = [];
     for (var s = 0; s < sidecars.length; s++) {
@@ -296,6 +304,46 @@
       // rectangle into frame 0 can create a false geometry conflict.
       if (sidecars[s].frameCount > 1) temporal.push(sidecars[s]);
       else references.push(sidecars[s]);
+    }
+    var decodedRasterCount = 0;
+    for (var temporalIndex = 0; temporalIndex < temporal.length; temporalIndex++) {
+      var rasterSidecar = temporal[temporalIndex];
+      var rasterFileBytes = sidecarBytes[rasterSidecar.inputIndex];
+      for (var rasterFrameIndex = 0; rasterFrameIndex < rasterSidecar.frames.length; rasterFrameIndex++) {
+        var rasterFrame = rasterSidecar.frames[rasterFrameIndex];
+        var rasterWidth = rasterFrame.width;
+        var rasterHeight = rasterFrame.height;
+        var compressedRaster = rasterFileBytes.subarray(rasterFrame.payloadOffset, rasterFrame.payloadOffset + rasterFrame.payloadBytes);
+        var raster = rasterCodec.decode(compressedRaster, rasterWidth * rasterHeight);
+        var measured = rasterCodec.measureRaster(raster, rasterWidth, rasterHeight);
+        var edgeDeltas = [measured.left, measured.top, rasterWidth - measured.right, rasterHeight - measured.bottom];
+        if (edgeDeltas.some(function (delta) { return Math.abs(delta) > 2; })) {
+          throw new Error("A decoded PRMF mask outline does not match its saved frame rectangle within 2 pixels.");
+        }
+        var recordLeft = rasterFrame.left;
+        var recordTop = rasterFrame.top;
+        var recordRight = rasterFrame.right;
+        var recordBottom = rasterFrame.bottom;
+        rasterFrame.recordBounds = { left: recordLeft, top: recordTop, right: recordRight, bottom: recordBottom };
+        rasterFrame.left = recordLeft + measured.left;
+        rasterFrame.top = recordTop + measured.top;
+        rasterFrame.right = recordLeft + measured.right;
+        rasterFrame.bottom = recordTop + measured.bottom;
+        rasterFrame.centerX = recordLeft + measured.centerX;
+        rasterFrame.centerY = recordTop + measured.centerY;
+        rasterFrame.width = measured.width;
+        rasterFrame.height = measured.height;
+        rasterFrame.maskRaster = {
+          codec: "GDeflate",
+          rasterWidth: rasterWidth,
+          rasterHeight: rasterHeight,
+          activePixels: measured.activePixels,
+          filledPixels: measured.filledPixels,
+          centerMethod: measured.centerMethod,
+          boundsSource: "nonzero mask outline pixels"
+        };
+        decodedRasterCount++;
+      }
     }
     var expected = (expectedTimeTicks || []).map(function (value) { return Number(value); });
     if (!expected.length) throw new Error("Saved-project source frame timing is required to validate Object Mask frame coverage.");
@@ -396,7 +444,11 @@
         var values = observations.map(function (item) { return item[axes[axisIndex]]; });
         disagreement = Math.max(disagreement, Math.max.apply(Math, values) - Math.min.apply(Math, values));
       }
-      if (distinct.length > 1 && (!dimensionsMatch || disagreement > tolerance)) throw new Error("Referenced PRMF sidecars contain an unresolved rectangle conflict at " + key + " ticks.");
+      var centerXValues = observations.map(function (item) { return item.centerX; });
+      var centerYValues = observations.map(function (item) { return item.centerY; });
+      var centerDisagreement = Math.max(Math.max.apply(Math, centerXValues) - Math.min.apply(Math, centerXValues), Math.max.apply(Math, centerYValues) - Math.min.apply(Math, centerYValues));
+      if (distinct.length > 1 && (!dimensionsMatch || disagreement > tolerance)) throw new Error("Referenced PRMF sidecars contain an unresolved mask-bounds conflict at " + key + " ticks.");
+      if (centerDisagreement > tolerance) throw new Error("Referenced PRMF sidecars contain an unresolved mask-centroid conflict at " + key + " ticks.");
       var geometry = { left: 0, top: 0, right: 0, bottom: 0 };
       for (var a = 0; a < axes.length; a++) {
         var nums = distinct.map(function (item) { return item[axes[a]]; }).sort(function (left, right) { return left - right; });
@@ -408,8 +460,10 @@
       geometry.frame = expectedIndex[key];
       geometry.sourceWidth = chosen.sourceWidth;
       geometry.sourceHeight = chosen.sourceHeight;
-      geometry.centerX = (geometry.left + geometry.right) / 2;
-      geometry.centerY = (geometry.top + geometry.bottom) / 2;
+      centerXValues.sort(function (left, right) { return left - right; });
+      centerYValues.sort(function (left, right) { return left - right; });
+      geometry.centerX = centerXValues.length % 2 ? centerXValues[(centerXValues.length - 1) / 2] : (centerXValues[centerXValues.length / 2 - 1] + centerXValues[centerXValues.length / 2]) / 2;
+      geometry.centerY = centerYValues.length % 2 ? centerYValues[(centerYValues.length - 1) / 2] : (centerYValues[centerYValues.length / 2 - 1] + centerYValues[centerYValues.length / 2]) / 2;
       geometry.width = geometry.right - geometry.left;
       geometry.height = geometry.bottom - geometry.top;
       geometry.normalizedCenterX = geometry.centerX / geometry.sourceWidth;
@@ -418,6 +472,9 @@
       geometry.normalizedHeight = geometry.height / geometry.sourceHeight;
       geometry.sourceSidecarUuids = observations.map(function (item) { return item.sourceSidecarUuid; }).filter(function (uuid, index, all) { return all.indexOf(uuid) === index; });
       geometry.sourceFrameCount = observations.length;
+      geometry.maskRaster = { codec: "GDeflate", decodedObservations: observations.length,
+        centerMethod: "outline row-span centroid", boundsSource: "nonzero mask outline pixels",
+        activePixels: observations.reduce(function (sum, item) { return sum + item.maskRaster.activePixels; }, 0) };
       timeline.push(geometry);
     });
     if (timeline.length < 2) throw new Error("Fewer than two Object Mask frames overlap the selected clip's source range.");
@@ -434,12 +491,14 @@
     }
     var referenceSidecars = references.map(function (item) { return { uuid: item.uuid, file: item.file, recordCount: item.frameCount,
       storedTimestampCount: item.storedTimestampCount, reason: "single-record PRMF sidecar is retained as a reference and excluded from temporal tracking" }; });
+    sidecars.forEach(function (item) { delete item.inputIndex; });
     return { success: true, samples: timeline, sidecars: sidecars, temporalSidecarCount: temporal.length,
+      decodedRasterCount: decodedRasterCount,
       singleRecordReferences: referenceSidecars,
       untimedSingleRecordReferences: referenceSidecars.filter(function (item) { return !item.storedTimestampCount; }),
-      formatDetection: { premiereVersion: metadata.premiereVersion, detectedFormat: "premiere-26.x-object-mask-prmf-v3-rectangle-records",
-        parserUsed: "parser-26.x-prmf-v3-frame-rectangles", extractionConfidence: "validated-frame-geometry",
-        frameCount: timeline.length, failures: [], reason: "PRMF v3 rectangle records have stable source-frame timing, continuous geometry, and passed independent position and scale controls; rotation is not decoded." },
+      formatDetection: { premiereVersion: metadata.premiereVersion, detectedFormat: "premiere-26.x-object-mask-prmf-v3-gdeflate-mask-raster",
+        parserUsed: OBJECT_MASK_PARSER_ID, extractionConfidence: "validated-mask-raster-geometry",
+        frameCount: timeline.length, failures: [], reason: "PRMF v3 GDeflate mask rasters were decoded byte-for-byte and their outline bounds and row-span centroids passed independent position and size controls; rotation is not decoded." },
       frameCoverage: { expectedSourceFrames: expected.length, decodedFrames: timeline.length,
         leadingMissingFrames: leadingMissingFrames, trailingMissingFrames: trailingMissingFrames },
       capabilities: { position: true, bounds: true, scale: true, rotation: false },
@@ -453,7 +512,7 @@
     parse26Tracker: parse26Tracker,
     parsePrmfV3: parsePrmfV3,
     decodeObjectMaskSidecars: decodeObjectMaskSidecars,
-    parserVersions: { "26.x": "registered AEMask2 104-byte point parser and validated PRMF v3 Object Mask geometry parser", "27.x": "unsupported until independently validated" },
+    parserVersions: { "26.x": "registered AEMask2 104-byte point parser and validated PRMF v3 GDeflate mask-raster geometry parser", "27.x": "unsupported until independently validated" },
     unsupportedFormat: unsupportedFormat,
     constants: { trackerMatchName: TRACKER_MATCH_NAME, trackerSampleBytes: TRACKER_SAMPLE_BYTES, classicMaskPrivateDataHash: CLASSIC_MASK_PRIVATE_DATA_HASH }
   };

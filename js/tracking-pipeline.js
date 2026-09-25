@@ -50,7 +50,7 @@
         timeFromTrackStart: sample.timeFromTrackStart,
         x: Number(sample.normalizedCenterX),
         y: Number(sample.normalizedCenterY),
-        position: { x: Number(sample.normalizedCenterX), y: Number(sample.normalizedCenterY), coordinateSpace: "source-normalized", semantic: "center of validated Object Mask rectangle" },
+        position: { x: Number(sample.normalizedCenterX), y: Number(sample.normalizedCenterY), coordinateSpace: "source-normalized", semantic: "centroid estimated from the decoded Object Mask outline" },
         left: Number(sample.left),
         top: Number(sample.top),
         right: Number(sample.right),
@@ -66,14 +66,15 @@
         scale: null,
         rotation: null,
         confidence: { position: "controlled-sample-validated", bounds: "controlled-sample-validated", size: "controlled-sample-validated", rotation: "unavailable" },
+        geometrySource: "GDeflate-decoded mask outline",
         geometryProvenance: sample.sourceSidecarUuids || []
       });
     }
     return {
       samples: normalized,
       capabilities: { position: true, bounds: true, scale: true, rotation: false },
-      representation: "normalized-source-object-mask-rectangle",
-      extractionConfidence: "validated-prmf-v3-frame-geometry"
+      representation: "normalized-source-object-mask-raster-geometry",
+      extractionConfidence: "validated-prmf-v3-gdeflate-mask-raster-geometry"
     };
   }
 

@@ -3,7 +3,7 @@
 
   var statusElement, statusTextElement, connectionElement;
   var sourceElement, sourceTextElement, sourceMetaElement, targetSummary, targetName, targetType;
-  var readButton, useSelectionButton, applyButton, applyButtonText, autoScaleInput;
+  var readButton, useSelectionButton, applyButton, applyButtonText, autoScaleInput, motionBlurInput;
   var modeInputs, axisInputs;
   var trackHasValidatedBounds = false;
   var selectedTargetId = null;
@@ -24,6 +24,7 @@
     for (var i = 0; i < modeInputs.length; i++) modeInputs[i].disabled = busy;
     for (var j = 0; j < axisInputs.length; j++) axisInputs[j].disabled = busy;
     updateScaleControl();
+    updateMotionBlurControl();
   }
 
   function setBusy(busy, message, stage) {
@@ -156,8 +157,18 @@
         : "Follows validated changes in the Object Mask size.");
   }
 
+  function updateMotionBlurControl() {
+    if (!motionBlurInput) return;
+    var follow = selectedMode() === "follow";
+    if (!follow) motionBlurInput.checked = false;
+    motionBlurInput.disabled = global.ObjectTrackerState.busy || !follow;
+    motionBlurInput.title = follow
+      ? "Raises the target Transform effect's Shutter Angle to at least 180° and uses its native motion blur."
+      : "Motion Blur is available in Follow mode only.";
+  }
+
   function applyTrackWithOptions(options) {
-    setStatus("Writing Position keyframes…", "busy");
+    setStatus(options.motionBlur ? "Writing tracking keys and setting Transform Shutter Angle…" : "Writing Position keyframes…", "busy");
     global.ObjectTrackerBridge.callWithArguments("applyTrackToSelectedTarget", [JSON.stringify(global.ObjectTrackerState.cachedTrack), JSON.stringify(options)], function (result) {
       setBusy(false);
       if (!result || !result.success) {
@@ -165,7 +176,7 @@
         return;
       }
       var count = result.generatedKeys ? result.generatedKeys.length : 0;
-      setStatus("Tracking applied" + (count ? " · " + count + " frames" : ""), "success");
+      setStatus("Tracking applied" + (count ? " · " + count + " frames" : "") + (result.motionBlur ? " · Shutter Angle " + result.motionBlurShutterAngle + "°" : ""), "success");
       if (statusResetTimer) clearTimeout(statusResetTimer);
       statusResetTimer = setTimeout(function () {
         if (!global.ObjectTrackerState.busy) setStatus("Ready", "");
@@ -178,6 +189,7 @@
     var options = {
       mode: selectedMode(),
       autoScale: autoScaleInput.checked,
+      motionBlur: motionBlurInput.checked,
       x: document.getElementById("xAxis").checked,
       y: document.getElementById("yAxis").checked
     };
@@ -219,6 +231,7 @@
       applyButton = document.getElementById("applyTrackButton");
       applyButtonText = document.getElementById("applyButtonText");
       autoScaleInput = document.getElementById("autoScale");
+      motionBlurInput = document.getElementById("motionBlur");
       modeInputs = document.querySelectorAll('input[name="trackMode"]');
       axisInputs = [document.getElementById("xAxis"), document.getElementById("yAxis")];
       for (var modeIndex = 0; modeIndex < modeInputs.length; modeIndex++) modeInputs[modeIndex].addEventListener("change", updateControls);

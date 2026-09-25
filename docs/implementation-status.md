@@ -12,11 +12,11 @@ The decoder identifies Object Mask data when the linked sidecars pass the regist
 
 ### Decoders
 
-- Object Mask, Premiere 26.x: reads per-frame rectangle coordinates, source dimensions, payload ranges, and stored times from PRMF v3 trailer records. It aligns records with saved source-frame timing, handles the observed timestamp-omitted record shape when another sidecar establishes one stable payload offset, sorts by recorded time, and ignores frames outside the selected clip's trim. Single-record sidecars remain references instead of motion samples.
+- Object Mask, Premiere 26.x: reads rectangle coordinates, source dimensions, payload ranges, and stored times from PRMF v3 trailer records. Each temporal payload is a GDeflate-compressed 8-bit outline raster. The panel decodes it, checks its byte count and dimensions, confirms its outline bounds are within 2 pixels of the saved rectangle, then measures the pixel bounds and row-span centroid. It aligns records with saved source-frame timing, handles the observed timestamp-omitted record shape when another sidecar establishes one stable payload offset, sorts by recorded time, and ignores frames outside the selected clip's trim. Single-record sidecars remain references instead of motion samples.
 - Classic AEMask2, Premiere 26.x: reads the observed 104-byte Tracker entries and extracts XY float32 values at offsets 64 and 68. An uninitialized first identity sample is omitted. The resulting point track provides Position motion only; it does not provide validated bounds.
 - Premiere 27.x: both private layouts are disabled until separately validated.
 
-Object Mask frames are reported only after the linked sidecars, registered record layout, payload coverage, source dimensions, source-frame timing, overlap, and frame continuity pass validation. The decoder allows at most one missing frame at either clip boundary and rejects interior gaps, unresolved rectangle conflicts, and changing source dimensions.
+Object Mask frames are reported only after the linked sidecars, registered record layout, GDeflate decoding, raster dimensions, outline-to-rectangle check, source dimensions, source-frame timing, overlap, and frame continuity pass validation. The decoder allows at most one missing frame at either clip boundary and rejects interior gaps, unresolved bounds or centroid conflicts, and changing source dimensions.
 
 ### Panel workflow and apply motion
 
@@ -26,10 +26,11 @@ The current panel has three source/target actions: **Detect**, **Use Selection**
 |---|---|
 | Follow | Uses Transform Position. Keeps the selected target's existing Position as the baseline and applies the tracked center delta from the first overlapping frame. |
 | Follow with Auto Scale | Requires validated Object Mask bounds. Scales each target axis from its existing Scale baseline by sqrt((current width / reference width) × (current height / reference height)). Scale-up grows the target; scale-down shrinks it. |
+| Follow with Motion Blur | Sets the existing target Transform effect's native Shutter Angle to at least 180°. If **Use Composition's Shutter Angle** is on, it turns that override off and reads both values back. |
 | Stabilize | Uses the selected target's built-in Motion Position and writes inverse movement. It does not add Transform, animate Scale, or copy the source Object Mask to the target. |
 | Clear generated keys | A guarded host-side `clearGeneratedPositionKeys` routine exists in JSX, but the panel does not call it, retain the generated-key record, or expose a clear action. Treat clearing as unavailable from the current UI; remove keys through Premiere's Effect Controls. |
 
-The X and Y controls select which Position axes to move, and at least one must be selected. Auto Scale is only available in Follow mode when the cached track has validated bounds. The former Fit target frame control was removed. A detected track is cached in panel local storage and can be restored when the panel is reopened; generated-key records are not currently retained by the UI.
+The X and Y controls select which Position axes to move, and at least one must be selected. Auto Scale is only available in Follow mode when the cached track has validated bounds. Motion Blur is available in Follow mode only and sets Transform's native Shutter Angle; it does not animate blur strength from movement. The former Fit target frame control was removed. A detected track is cached in panel local storage and can be restored when the panel is reopened; generated-key records are not currently retained by the UI.
 
 ### Coordinate and target behavior
 
@@ -43,22 +44,26 @@ Follow moves the target clip as a whole. It does not measure visible artwork bou
 
 The controlled manifest at C:\controls\object-mask-control-manifest.json contains five Premiere 26.3.2 projects: static, horizontal, vertical, scale-up, and scale-down. The static/horizontal/vertical projects use TrackItem 71; scale-up/down use TrackItem 77. Each stream decodes 20 frames at 608×1080.
 
-The controls pass the intended checks:
+The independent JavaScript decoder produced the same SHA-256 output bytes as a separate GDeflate reference decoder for all 100 temporal rasters in these five controls. Overlay checks on static, horizontal, and scale-up/down frames place the decoded raster outline on the visible cat boundary.
 
-- Static center varies by at most 0.5 px; width is unchanged and height varies by 2 px.
-- Horizontal motion changes X by 47 px net while Y changes 0.5 px.
-- Vertical motion changes Y by -88.5 px while X stays constant.
-- Scale-up changes width and height by factors of 1.386 and 1.391.
-- Scale-down changes width and height by factors of 0.574 and 0.570.
+The mask-derived geometry passes these checks:
+
+- Static outline centroid varies by about 0.13 px in X and 0.06 px in Y; width is unchanged and height varies by 2 px.
+- Horizontal motion changes X by 46.9 px net while Y changes 0.5 px.
+- Vertical motion changes Y by -87.5 px while X changes 0.1 px.
+- Scale-up changes outline width and height by factors of 1.386 and 1.389.
+- Scale-down changes outline width and height by factors of 0.574 and 0.571.
 - Scale-up and scale-down also contain horizontal center drift, so they are not perfect size-only image sequences.
 
-A separate 96-frame Object Mask and a trimmed clip with 395 PRMF records pass the reader; the latter maps to 393 frames in the selected clip range despite one timestamp being out of payload order. An older 98-frame project is a held-out forensic check, not a current test fixture.
+The 325-frame face mask in `D:\Video Edit\editor interviews\Test Edit_1.prproj` also decodes from its linked sidecars at 1920×1080. Its raster bytes match the independent GDeflate reference for all 325 frames, and source-video overlays show the recovered outline following the face. The saved clip expects 326 frames, so the final frame is missing; the reader reports 325 frames and allows one missing frame at the trailing edge. Earlier 96-frame and trimmed-project checks validated the rectangle-only parser; those files have not been rerun through the raster decoder.
 
 ### Premiere host
 
-Premiere verified 20 Transform Position keys and 40 Transform Scale keys on the scale-down graphic. Scale-up behavior was also confirmed. The classic-mask path has separate history: 121 Transform Position keys were read back, 118 Follow keys were read back on a MOGRT, and inverse Position keys were visually checked on a disposable video overlay.
+Premiere verified Transform key writing with the earlier rectangle-center reader: 20 Position keys and 40 Scale keys on a scale-down graphic; scale-up behavior was also confirmed. The classic-mask path has separate history: 121 Transform Position keys were read back, 118 Follow keys were read back on a MOGRT, and inverse Position keys were visually checked on a disposable video overlay. The new raster-centroid Position output still needs a live Premiere apply check.
 
 The current JSX implements Object Mask Stabilize through Motion Position only. A live Object Mask Stabilize write/readback and rendered comparison are not recorded here. Manual Effect Controls inspection and project close/reopen persistence checks are also outstanding.
+
+The Motion Blur option and host writer now set Transform's native Shutter Angle to at least 180°, turn off **Use Composition's Shutter Angle** when necessary, and read the setting back. This change has not yet been exercised in a live Premiere session. Confirm the effect controls and rendered result in Premiere before treating it as host-validated.
 
 ## Safeguards
 
@@ -70,20 +75,16 @@ The current JSX implements Object Mask Stabilize through Motion Position only. A
 
 ## Reproduce the checks
 
-Run the controlled geometry report:
-
-    python tools\object_mask_forensics.py validate-controls C:\controls\object-mask-control-manifest.json
-
 Run the JavaScript reader and solver checks:
 
     node tests\object-mask-controls.test.js C:\controls
 
-Run the classic-mask project-reader regression:
+Check a saved Premiere Object Mask project:
 
-    node tests\project-reader-sample.js
+    node tests\project-reader-sample.js "D:\Video Edit\editor interviews\Test Edit_1.prproj" 1000294 26.3.2 --expect-object-mask
 
 Run the tracking pipeline checks:
 
     node tests\tracking-pipeline.test.js
 
-The Python tool emits candidate geometry for forensic reporting. The CEP reader is the application decoder; do not treat candidate geometry alone as validated plugin output. See [PRMF v3 findings](object-mask-prmf-v3-findings.md) for the record layout, control results, and codec investigation.
+The Python tool emits candidate geometry from PRMF trailer rectangles for forensic comparison. It does not decode GDeflate. The CEP reader is the application decoder and now uses the decoded raster outline. See [PRMF v3 findings](object-mask-prmf-v3-findings.md) for the record layout, codec, and control evidence.

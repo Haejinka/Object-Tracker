@@ -226,6 +226,21 @@ $._ObjectTracker.addTransformWithQE = function (clip, trackIndex) {
     return { success: true, added: true, component: added[0].component, matchName: added[0].matchName };
 };
 
+$._ObjectTracker.findTransformShutterProperties = function (component) {
+    var properties = $._ObjectTracker.read(component, "properties");
+    var count = properties ? $._ObjectTracker.read(properties, "numItems") : 0;
+    var matches = { angle: [], useComposition: [] };
+    for (var i = 0; i < count; i++) {
+        var parameter = $._ObjectTracker.read(properties, i);
+        if (!parameter) continue;
+        var name = String($._ObjectTracker.read(parameter, "displayName") || "").toLowerCase().replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
+        var matchName = String($._ObjectTracker.read(parameter, "matchName") || "").toLowerCase();
+        if (name === "shutter angle" || /(^|\.)shutter angle$/.test(matchName)) matches.angle.push(parameter);
+        else if ((name.indexOf("use composition") >= 0 && name.indexOf("shutter angle") >= 0) || /use.*composition.*shutter.*angle/.test(matchName)) matches.useComposition.push(parameter);
+    }
+    return matches;
+};
+
 $._ObjectTracker.keySeconds = function (key) {
     if (typeof key === "number") return key;
     var seconds = $._ObjectTracker.read(key, "seconds");
@@ -314,8 +329,11 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
     if (summary.videos.length !== 1) return JSON.stringify({ success: false, stage: "transform-write", code: summary.videos.length ? "SELECT_ONE_VIDEO_TARGET" : "NO_SELECTED_VIDEO_TARGET", message: "Select exactly one video or graphic timeline clip as the motion target. Linked audio may remain selected.", selectedVideoCount: summary.videos.length });
     if (!track || !track.samples || track.samples.length < 2 || !track.source) return JSON.stringify({ success: false, stage: "transform-write", code: "TRACK_NOT_READY", message: "Read a valid tracked mask before applying motion." });
     var mode = String(options.mode || "follow").toLowerCase();
+    if (options.motionBlur === true && mode !== "follow") return JSON.stringify({ success: false, stage: "transform-write", code: "MOTION_BLUR_FOLLOW_ONLY", message: "Motion Blur is available in Follow mode only. No keys were written." });
+    var writeMotionBlur = mode === "follow" && options.motionBlur === true;
     var autoScale = mode !== "stabilize" && options.autoScale === true;
     options.autoScale = autoScale;
+    options.motionBlur = writeMotionBlur;
     var writeScale = autoScale;
     if (writeScale && (!$._ObjectTracker.MotionSolver || !$._ObjectTracker.MotionSolver.hasValidatedBounds(track))) return JSON.stringify({ success: false, stage: "transform-write", code: "TRACK_BOUNDS_UNAVAILABLE", message: "Auto Scale needs decoded and validated per-frame mask bounds." });
     var activeSequenceId = String($._ObjectTracker.read(sequence, "sequenceID") || "");
@@ -463,6 +481,35 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
     };
     if (!methods.setTimeVarying || !methods.addKey || !methods.setValueAtKey || !methods.removeKey) return JSON.stringify({ success: false, stage: "transform-write", code: "POSITION_WRITE_API_INCOMPLETE", message: "Premiere's keyframe writer or rollback methods are unavailable; no keys were written.", methods: methods, transformAdded: transformAdded });
 
+    var motionBlurSettings = null;
+    if (writeMotionBlur) {
+        var shutterProperties = $._ObjectTracker.findTransformShutterProperties(positionComponent.component);
+        if (shutterProperties.angle.length !== 1 || shutterProperties.useComposition.length > 1) return JSON.stringify({ success: false, stage: "transform-write", code: "TRANSFORM_SHUTTER_PROPERTIES_AMBIGUOUS", message: "Could not uniquely identify Transform's Shutter Angle control. No tracking keys were written.", propertyCounts: { shutterAngle: shutterProperties.angle.length, useCompositionShutterAngle: shutterProperties.useComposition.length }, transformAdded: transformAdded });
+        var shutterAngle = shutterProperties.angle[0];
+        var shutterValue = $._ObjectTracker.call(shutterAngle, "getValue", []);
+        var shutterTimeVarying = $._ObjectTracker.getTimeVarying(shutterAngle);
+        var shutterBaseline = shutterValue.available && !shutterValue.error ? Number(shutterValue.value) : NaN;
+        if (!isFinite(shutterBaseline) || shutterTimeVarying !== false || typeof $._ObjectTracker.read(shutterAngle, "setValue") !== "function") return JSON.stringify({ success: false, stage: "transform-write", code: "TRANSFORM_SHUTTER_ANGLE_UNAVAILABLE", message: "Transform's Shutter Angle must be readable, unanimated, and writable. No tracking keys were written.", transformAdded: transformAdded });
+
+        var useComposition = shutterProperties.useComposition.length ? shutterProperties.useComposition[0] : null;
+        var useCompositionBaseline = null;
+        if (useComposition) {
+            var compositionValue = $._ObjectTracker.call(useComposition, "getValue", []);
+            var compositionTimeVarying = $._ObjectTracker.getTimeVarying(useComposition);
+            if (!compositionValue.available || compositionValue.error || compositionTimeVarying !== false || typeof $._ObjectTracker.read(useComposition, "setValue") !== "function") return JSON.stringify({ success: false, stage: "transform-write", code: "TRANSFORM_SHUTTER_OVERRIDE_UNAVAILABLE", message: "Could not safely read or change Transform's Use Composition's Shutter Angle control. No tracking keys were written.", transformAdded: transformAdded });
+            useCompositionBaseline = compositionValue.value;
+        }
+        motionBlurSettings = {
+            angle: shutterAngle,
+            originalAngle: shutterBaseline,
+            targetAngle: Math.max(shutterBaseline, 180),
+            useComposition: useComposition,
+            originalUseComposition: useCompositionBaseline,
+            compositionOffValue: typeof useCompositionBaseline === "number" ? 0 : false,
+            disableComposition: !!(useComposition && (useCompositionBaseline === true || Number(useCompositionBaseline) === 1))
+        };
+    }
+
     var desiredTimes = [];
     for (var d = 0; d < planned.length; d++) desiredTimes.push(planned[d].seconds);
     var createdKeys = [];
@@ -565,6 +612,44 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
         }
     }
 
+    var motionBlurAngle = null;
+    if (writeMotionBlur) {
+        try {
+            if (motionBlurSettings.disableComposition) motionBlurSettings.useComposition.setValue(motionBlurSettings.compositionOffValue, true);
+            motionBlurSettings.angle.setValue(motionBlurSettings.targetAngle, true);
+        } catch (motionBlurWriteError) { failure = String(motionBlurWriteError); }
+        if (!failure) {
+            var appliedShutterValue = $._ObjectTracker.call(motionBlurSettings.angle, "getValue", []);
+            var appliedCompositionValue = motionBlurSettings.useComposition ? $._ObjectTracker.call(motionBlurSettings.useComposition, "getValue", []) : null;
+            motionBlurAngle = appliedShutterValue.available && !appliedShutterValue.error ? Number(appliedShutterValue.value) : NaN;
+            if (!isFinite(motionBlurAngle) || Math.abs(motionBlurAngle - motionBlurSettings.targetAngle) > 0.001) failure = "Premiere did not read back the requested Transform Shutter Angle.";
+            if (!failure && motionBlurSettings.disableComposition && (!appliedCompositionValue || !appliedCompositionValue.available || appliedCompositionValue.error || appliedCompositionValue.value === true || Number(appliedCompositionValue.value) === 1)) failure = "Premiere did not turn off Use Composition's Shutter Angle.";
+        }
+        if (failure) {
+            try { motionBlurSettings.angle.setValue(motionBlurSettings.originalAngle, true); } catch (restoreShutterError) {}
+            if (motionBlurSettings.useComposition) try { motionBlurSettings.useComposition.setValue(motionBlurSettings.originalUseComposition, true); } catch (restoreCompositionError) {}
+            var restoredShutter = $._ObjectTracker.call(motionBlurSettings.angle, "getValue", []);
+            var restoredAngleValue = restoredShutter.available && !restoredShutter.error ? Number(restoredShutter.value) : NaN;
+            var shutterRestoreVerified = isFinite(restoredAngleValue) && Math.abs(restoredAngleValue - motionBlurSettings.originalAngle) <= 0.001;
+            var compositionRestoreVerified = !motionBlurSettings.useComposition;
+            if (motionBlurSettings.useComposition) {
+                var restoredComposition = $._ObjectTracker.call(motionBlurSettings.useComposition, "getValue", []);
+                var restoredCompositionIsOn = restoredComposition.available && !restoredComposition.error && (restoredComposition.value === true || Number(restoredComposition.value) === 1);
+                var originalCompositionWasOn = motionBlurSettings.originalUseComposition === true || Number(motionBlurSettings.originalUseComposition) === 1;
+                compositionRestoreVerified = restoredComposition.available && !restoredComposition.error && restoredCompositionIsOn === originalCompositionWasOn;
+            }
+            if (writeScale) {
+                for (var blurScaleRollbackIndex = 0; blurScaleRollbackIndex < scaleChannels.length; blurScaleRollbackIndex++) {
+                    $._ObjectTracker.removeNewKeysSince(scaleChannels[blurScaleRollbackIndex].parameter, scaleChannels[blurScaleRollbackIndex].baseline.keys);
+                    $._ObjectTracker.restoreStaticScalar(scaleChannels[blurScaleRollbackIndex].parameter, scaleChannels[blurScaleRollbackIndex].baseline.timeVarying, scaleChannels[blurScaleRollbackIndex].baseline.value);
+                }
+            }
+            var blurPositionRollback = $._ObjectTracker.removeNewKeysSince(position, beforeKeys.keys);
+            var blurPositionRestored = $._ObjectTracker.restoreStaticPosition(position, beforeVarying, [baselineX, baselineY]);
+            return JSON.stringify({ success: false, stage: "transform-write", code: "MOTION_BLUR_WRITE_FAILED", message: "Premiere could not verify Transform's Shutter Angle setting. New tracking keys were rolled back where possible.", details: failure, shutterAngleRestoreVerified: shutterRestoreVerified, compositionOverrideRestoreVerified: compositionRestoreVerified, positionRollbackVerified: blurPositionRollback.verified, positionStaticValueRestored: blurPositionRestored, transformAdded: transformAdded });
+        }
+    }
+
     var scaleBaselineReport = [];
     if (writeScale) {
         for (var scaleReportIndex = 0; scaleReportIndex < scaleChannels.length; scaleReportIndex++) {
@@ -578,7 +663,7 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
         code: "TRACK_APPLIED",
         message: mode === "stabilize"
             ? "Verified editable Motion Position keyframes for stabilization. No Transform or Scale keys were added."
-            : (writeScale ? "Verified editable Transform Position and Scale keyframes on the selected target." : "Verified editable Transform Position keyframes on the selected target."),
+            : (writeMotionBlur ? (writeScale ? "Verified Transform Position and Scale keyframes and set Transform Shutter Angle to " + motionBlurAngle + " degrees." : "Verified Transform Position keyframes and set Transform Shutter Angle to " + motionBlurAngle + " degrees.") : (writeScale ? "Verified editable Transform Position and Scale keyframes on the selected target." : "Verified editable Transform Position keyframes on the selected target.")),
         sourceClip: track.source.sourceClipName || null,
         targetClip: String($._ObjectTracker.read(clip, "name") || ""),
         targetNodeId: String($._ObjectTracker.read(clip, "nodeId") || ""),
@@ -587,6 +672,9 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
         sequenceId: String($._ObjectTracker.read(sequence, "sequenceID") || ""),
         mode: mode,
         autoScale: autoScale,
+        motionBlur: writeMotionBlur,
+        motionBlurShutterAngle: writeMotionBlur ? motionBlurAngle : null,
+        compositionShutterAngleDisabled: writeMotionBlur ? motionBlurSettings.disableComposition : false,
         scaleFactors: { x: deltaXFactor, y: deltaYFactor },
         axis: { x: options.x !== false, y: options.y !== false },
         positionComponentType: mode === "stabilize" ? "motion" : "transform",
@@ -609,7 +697,7 @@ $._ObjectTracker.applyTrackToSelectedTarget = function (trackJson, optionsJson) 
         motionDiagnostics: solved.diagnostics,
         note: mode === "stabilize"
             ? "Stabilization writes only inverse-motion keys to the clip's built-in Motion Position. The Object Mask and all Scale properties are left untouched."
-            : (autoScale ? "Transform Position follows the tracked point independently from Transform Scale, which follows validated mask bounds. The target's existing Transform Scale remains the reference size." : "Transform Position follows the tracked point. The target's existing Transform Position remains the reference placement.")
+            : (writeMotionBlur ? (writeScale ? "Transform Position follows the tracked point, Transform Scale follows validated mask bounds, and Transform's native Shutter Angle is set to at least 180 degrees." : "Transform Position follows the tracked point and Transform's native Shutter Angle is set to at least 180 degrees.") : (autoScale ? "Transform Position follows the tracked point independently from Transform Scale, which follows validated mask bounds. The target's existing Transform Scale remains the reference size." : "Transform Position follows the tracked point. The target's existing Transform Position remains the reference placement."))
     });
 };
 
