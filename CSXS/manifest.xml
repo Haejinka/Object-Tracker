@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   ExtensionBundleId="com.objecttracker.premiere"
+                   ExtensionBundleVersion="0.1.0"
+                   ExtensionBundleName="Object Tracker"
+                   Version="12.0">
+  <ExtensionList>
+    <Extension Id="com.objecttracker.premiere.panel" Version="0.1.0"/>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="PPRO" Version="[26.0,99.9]"/>
+    </HostList>
+    <LocaleList>
+      <Locale Code="All"/>
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="12.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="com.objecttracker.premiere.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./jsx/host.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>Object Tracker</Menu>
+          <Geometry>
+            <Size>
+              <Width>380</Width>
+              <Height>560</Height>
+            </Size>
+            <MinSize>
+              <Width>220</Width>
+              <Height>280</Height>
+            </MinSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>

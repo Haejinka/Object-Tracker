@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Object Tracker</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true">OT</div>
+    <div>
+      <h1>Object Tracker</h1>
+      <p id="connectionStatus" class="subtle">Connecting to Premiere Pro…</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="card workflow-card">
+      <div class="section-heading">
+        <h2>Track to Transform</h2>
+        <span class="phase-tag">PHASE 3–7</span>
+      </div>
+      <p class="help-text">Select the timeline clip with a tracked Premiere mask, then read its motion. Select a target clip or graphic and apply the cached track.</p>
+      <p class="help-text">Follow adds the motion to the target Transform Position. Set that Position where the graphic should begin; add Transform first if you want to choose its starting point.</p>
+      <div id="trackSource" class="track-source" aria-live="polite">No track loaded</div>
+      <div class="button-row">
+        <button id="readTrackButton" class="button button-primary" type="button">Read Track Source</button>
+        <button id="applyTrackButton" class="button" type="button" disabled>Apply to Selected Target</button>
+      </div>
+      <fieldset class="mode-options">
+        <legend>Mode</legend>
+        <label><input type="radio" name="trackMode" value="follow" checked> Follow</label>
+        <label><input type="radio" name="trackMode" value="stabilize"> Stabilize</label>
+      </fieldset>
+      <fieldset class="mode-options axis-options">
+        <legend>Axes</legend>
+        <label><input id="xAxis" type="checkbox" checked> X</label>
+        <label><input id="yAxis" type="checkbox" checked> Y</label>
+      </fieldset>
+      <div class="button-row">
+        <button id="clearKeysButton" class="button" type="button" disabled>Clear Generated Keys on Selected Target</button>
+      </div>
+      <div id="resultStatus" class="result-status" role="status" aria-live="polite">Ready</div>
+      <p class="source-note">This build reads a verified AEMask2 Tracker stream from the selected clip. Premiere does not expose the mask subtype here, so Object Mask compatibility is not confirmed; .prmf sidecars are not decoded.</p>
+    </section>
+
+    <details class="card diagnostics-card">
+      <summary>Diagnostics</summary>
+      <p class="help-text">Inspect Premiere's scripting properties and scan candidate keyframe streams in the saved project.</p>
+      <div class="button-row">
+        <button id="inspectButton" class="button" type="button">Inspect selected clip</button>
+        <button id="trackButton" class="button" type="button">Check exposed track data</button>
+      </div>
+      <div class="button-row">
+        <button id="projectTrackButton" class="button" type="button">Scan saved project</button>
+      </div>
+    </details>
+
+    <section class="card report-card">
+      <div class="section-heading">
+        <h2>Structured report</h2>
+        <button id="copyButton" class="button button-small" type="button" disabled>Copy JSON</button>
+      </div>
+      <pre id="report" aria-label="Inspector output">No report yet. Choose a command above.</pre>
+    </section>
+
+      <p class="footnote">The project reader never saves the project. Transform keyframe writes are editable Premiere effect data; existing Position animation is preserved and causes the operation to stop.</p>
+  </main>
+
+  <script src="js/CSInterface.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/bridge.js"></script>
+  <script src="js/project-reader.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
